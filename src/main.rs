@@ -30,7 +30,7 @@ fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_color(s: &str) -> Result<[u8; 3], Box<dyn std::error::Error>> {
+pub fn parse_color(s: &str) -> Result<[u8; 3], Box<dyn std::error::Error>> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {
         if hex.len() != 6 {
@@ -232,6 +232,14 @@ enum ConfigureCommands {
         #[arg(short, long)]
         device: Option<String>,
     },
+    /// Show differences between a local config file and the device config
+    Diff {
+        /// Path to local configuration JSON file
+        file: String,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -289,6 +297,23 @@ enum SegmentCommands {
         /// Segment ID to delete
         #[arg(long)]
         id: u8,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Export segments to a JSON file
+    Export {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Import segments from a JSON file
+    Import {
+        /// Path to JSON file containing segment array
+        file: String,
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
@@ -382,6 +407,55 @@ enum DebugCommands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Continuously watch device info stats
+    Watch {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Polling interval in seconds (default: 2)
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
+}
+
+fn diff_json(local: &serde_json::Value, device: &serde_json::Value, prefix: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    match (local, device) {
+        (serde_json::Value::Object(lmap), serde_json::Value::Object(dmap)) => {
+            // Keys only in local
+            for (k, lv) in lmap {
+                let key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                if let Some(dv) = dmap.get(k) {
+                    let sub = diff_json(lv, dv, &key);
+                    lines.extend(sub);
+                } else {
+                    lines.push(format!("+ {key}: {lv}"));
+                }
+            }
+            // Keys only in device
+            for (k, dv) in dmap {
+                let key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                if !lmap.contains_key(k) {
+                    lines.push(format!("- {key}: {dv}"));
+                }
+            }
+        }
+        _ => {
+            if local != device {
+                let key = if prefix.is_empty() { "(root)" } else { prefix };
+                lines.push(format!("~ {key}: {local} -> {device}"));
+            }
+        }
+    }
+    lines
 }
 
 fn main() {
@@ -1082,6 +1156,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Segment {id} deleted on device at {ip}");
                 }
             }
+            SegmentCommands::Export { device, output } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let state = get_device_state(&ip)?;
+                let segments = state
+                    .get("seg")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Array(vec![]));
+                let pretty = serde_json::to_string_pretty(&segments)?;
+
+                if let Some(path) = output {
+                    std::fs::write(&path, format!("{pretty}\n"))?;
+                    println!("Segments exported to {path}");
+                } else {
+                    println!("{pretty}");
+                }
+            }
+            SegmentCommands::Import { file, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let content = std::fs::read_to_string(&file)?;
+                let segments: serde_json::Value = serde_json::from_str(&content)?;
+                let payload = json!({"seg": segments});
+
+                if dry_run {
+                    println!("Would import segments to device at {ip}:");
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    println!("Segments imported to device at {ip}");
+                }
+            }
         },
         Commands::Preset { subcommand } => match subcommand {
             PresetCommands::List { device } => {
@@ -1348,6 +1452,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{pretty}");
                 }
             }
+            DebugCommands::Watch { device, interval } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                loop {
+                    match get_device_info(&ip) {
+                        Ok(info) => {
+                            let uptime = info["uptime"].as_u64().unwrap_or(0);
+                            let hours = uptime / 3600;
+                            let mins = (uptime % 3600) / 60;
+                            let secs = uptime % 60;
+                            let heap = info["freeheap"].as_u64().unwrap_or(0);
+                            let fps = info["leds"]["fps"].as_u64().unwrap_or(0);
+                            let pwr = info["leds"]["pwr"].as_u64().unwrap_or(0);
+                            let wifi = info["wifi"]["signal"].as_i64().unwrap_or(0);
+                            println!(
+                                "[{ip}] uptime={hours}h{mins}m{secs}s heap={heap}B fps={fps} power={pwr}mA wifi={wifi}%"
+                            );
+                        }
+                        Err(e) => {
+                            println!("[{ip}] ERROR: {e}");
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(interval));
+                }
+            }
         },
         Commands::Configure { subcommand } => match subcommand {
             ConfigureCommands::Export { device, output } => {
@@ -1512,6 +1640,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "LED settings updated on device at {ip}: {}",
                         changes.join(", ")
                     );
+                }
+            }
+            ConfigureCommands::Diff { file, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let content = std::fs::read_to_string(&file)?;
+                let local: serde_json::Value = serde_json::from_str(&content)?;
+                let device_cfg = get_device_config(&ip)?;
+
+                let diffs = diff_json(&local, &device_cfg, "");
+
+                if diffs.is_empty() {
+                    println!("No differences found. Local file matches device configuration.");
+                } else {
+                    println!("Differences (local vs device):");
+                    for line in &diffs {
+                        println!("  {line}");
+                    }
+                    std::process::exit(1);
                 }
             }
         },

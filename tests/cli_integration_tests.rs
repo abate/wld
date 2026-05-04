@@ -1115,3 +1115,96 @@ fn test_dry_run_config_wifi_with_specific_device() {
 
     cleanup_temp_home(&temp_home);
 }
+
+// New feature tests
+
+#[test]
+fn test_config_diff_help() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["config", "--help"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("diff"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_diff_requires_file() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["config", "diff"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_segment_export_no_device() {
+    let temp_home = setup_temp_home();
+
+    // No device configured, should fail with "no default device"
+    let output = run_command_with_temp_home(&["segment", "export"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_segment_import_requires_file() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["segment", "import"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_watch_accepts_interval() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // Use --help to verify the --interval flag parses without actually running the loop
+    let output = run_command_with_temp_home(&["debug", "watch", "--help"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("interval"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_segment_import() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // Write a temp JSON file with a segments array
+    let seg_file = temp_home.join("segments.json");
+    std::fs::write(
+        &seg_file,
+        r#"[{"id": 0, "start": 0, "stop": 100, "on": true}]"#,
+    )
+    .expect("Failed to write segments file");
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "segment",
+            "import",
+            seg_file.to_str().unwrap(),
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would import segments"));
+    assert!(stdout.contains("192.168.1.100"));
+
+    cleanup_temp_home(&temp_home);
+}
