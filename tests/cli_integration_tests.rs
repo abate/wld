@@ -1045,7 +1045,7 @@ fn test_dry_run_config_wifi() {
     );
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Would configure WiFi"));
+    assert!(stdout.contains("Would configure"));
     assert!(stdout.contains("MyNetwork"));
     assert!(stdout.contains("***"));
     assert!(!stdout.contains("secret123"));

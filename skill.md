@@ -117,6 +117,12 @@ wld config diff my-device.json
 # Configure WiFi
 wld config wifi --ssid "MyNetwork" --password "secret"
 
+# Set mDNS hostname (device becomes accessible at stairs.local)
+wld config wifi --mdns "stairs"
+
+# Force 802.11g mode (more stable on ESP8266)
+wld config wifi --phy-mode g
+
 # Configure OTA (Over-The-Air) updates
 wld config ota --lock        # Prevent firmware updates
 wld config ota --unlock      # Allow firmware updates

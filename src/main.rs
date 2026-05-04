@@ -203,10 +203,16 @@ enum ConfigureCommands {
     Wifi {
         /// WiFi network name (SSID)
         #[arg(long)]
-        ssid: String,
-        /// WiFi password
+        ssid: Option<String>,
+        /// WiFi password (required with --ssid)
+        #[arg(long, requires = "ssid")]
+        password: Option<String>,
+        /// Set the mDNS hostname (e.g. "living-room" → living-room.local)
         #[arg(long)]
-        password: String,
+        mdns: Option<String>,
+        /// WiFi PHY mode: "n" (default, 802.11n) or "g" (802.11g, more stable on ESP8266)
+        #[arg(long, value_parser = ["n", "g"])]
+        phy_mode: Option<String>,
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
@@ -1621,23 +1627,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ConfigureCommands::Wifi {
                 ssid,
                 password,
+                mdns,
+                phy_mode,
                 device,
             } => {
+                if ssid.is_none() && mdns.is_none() && phy_mode.is_none() {
+                    return Err(
+                        "At least one of --ssid, --mdns, or --phy-mode must be specified".into(),
+                    );
+                }
                 let ip = resolve_device_ip(device.as_deref())?;
-                let payload = json!({
-                    "nw": {"ins": [{"ssid": ssid, "psk": password}]}
-                });
+                let mut payload = json!({});
+                let mut display = json!({});
+
+                if let Some(ref ssid) = ssid {
+                    let pwd = password.as_deref().unwrap_or("");
+                    payload["nw"] = json!({"ins": [{"ssid": ssid, "psk": pwd}]});
+                    display["nw"] = json!({"ins": [{"ssid": ssid, "psk": "***"}]});
+                }
+                if let Some(ref name) = mdns {
+                    payload["id"] = json!({"mdns": name});
+                    display["id"] = json!({"mdns": name});
+                }
+                if let Some(ref mode) = phy_mode {
+                    let force_g = mode == "g";
+                    payload["wifi"] = json!({"phy": force_g});
+                    display["wifi"] = json!({"phy": if force_g { "802.11g" } else { "802.11n" }});
+                }
 
                 if dry_run {
-                    let display = json!({
-                        "nw": {"ins": [{"ssid": ssid, "psk": "***"}]}
-                    });
-                    println!("Would configure WiFi on device at {ip}:");
+                    println!("Would configure on device at {ip}:");
                     println!("{}", serde_json::to_string_pretty(&display)?);
                 } else {
                     post_device_config(&ip, &payload)?;
-                    println!("WiFi configured on device at {ip}");
-                    println!("Note: Device may restart to apply WiFi changes");
+                    if ssid.is_some() {
+                        println!("WiFi configured on device at {ip}");
+                    }
+                    if let Some(ref name) = mdns {
+                        println!("mDNS hostname set to {name}.local on device at {ip}");
+                    }
+                    if let Some(ref mode) = phy_mode {
+                        let label = if mode == "g" { "802.11g" } else { "802.11n" };
+                        println!("WiFi PHY mode set to {label} on device at {ip}");
+                    }
+                    if ssid.is_some() || phy_mode.is_some() {
+                        println!("Note: Device may restart to apply changes");
+                    }
                 }
             }
             ConfigureCommands::Ota {
