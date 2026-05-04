@@ -148,6 +148,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: PresetCommands,
     },
+    /// Debug and inspect device state
+    Debug {
+        #[command(subcommand)]
+        subcommand: DebugCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -320,6 +325,49 @@ enum PresetCommands {
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DebugCommands {
+    /// Show device info (version, memory, uptime, WiFi signal, LED stats)
+    Info {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show live LED color values
+    Live {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List available effects on the device
+    Effects {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// List available color palettes on the device
+    Palettes {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Show combined state and info (full JSON dump)
+    Dump {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -512,6 +560,68 @@ pub fn get_device_presets(ip: &str) -> Result<serde_json::Value, Box<dyn std::er
     let text = response.text()?;
     let presets: serde_json::Value = serde_json::from_str(&text)?;
     Ok(presets)
+}
+
+pub fn get_device_info(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/info")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+pub fn get_device_json(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+pub fn get_device_effects(ip: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/eff")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    let effects: Vec<String> = serde_json::from_str(&text)?;
+    Ok(effects)
+}
+
+pub fn get_device_palettes(ip: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/pal")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    let palettes: Vec<String> = serde_json::from_str(&text)?;
+    Ok(palettes)
+}
+
+pub fn get_device_live(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/live")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    Ok(serde_json::from_str(&text)?)
 }
 
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -893,6 +1003,171 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     post_device_state(&ip, &payload)?;
                     println!("Deleted preset {id} on device at {ip}");
+                }
+            }
+        },
+        Commands::Debug { subcommand } => match subcommand {
+            DebugCommands::Info { device, json } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let info = get_device_info(&ip)?;
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                } else {
+                    println!("Device info for {ip}:\n");
+                    if let Some(name) = info["name"].as_str() {
+                        println!("  Name:       {name}");
+                    }
+                    if let Some(ver) = info["ver"].as_str() {
+                        println!("  Version:    {ver}");
+                    }
+                    if let Some(vid) = info["vid"].as_u64() {
+                        println!("  Build ID:   {vid}");
+                    }
+                    if let Some(mac) = info["mac"].as_str() {
+                        println!("  MAC:        {mac}");
+                    }
+                    if let Some(uptime) = info["uptime"].as_u64() {
+                        let hours = uptime / 3600;
+                        let mins = (uptime % 3600) / 60;
+                        let secs = uptime % 60;
+                        println!("  Uptime:     {hours}h {mins}m {secs}s");
+                    }
+                    if let Some(heap) = info["freeheap"].as_u64() {
+                        let warning = if heap < 10000 { " (LOW!)" } else { "" };
+                        println!("  Free heap:  {heap} bytes{warning}");
+                    }
+
+                    // WiFi info
+                    if let Some(wifi) = info.get("wifi") {
+                        println!();
+                        if let Some(signal) = wifi["signal"].as_i64() {
+                            let quality = match signal {
+                                80..=100 => "excellent",
+                                60..=79 => "good",
+                                40..=59 => "fair",
+                                _ => "poor",
+                            };
+                            println!("  WiFi:       {signal}% ({quality})");
+                        }
+                        if let Some(channel) = wifi["channel"].as_u64() {
+                            println!("  Channel:    {channel}");
+                        }
+                        if let Some(bssid) = wifi["bssid"].as_str() {
+                            println!("  BSSID:      {bssid}");
+                        }
+                    }
+
+                    // LED info
+                    if let Some(leds) = info.get("leds") {
+                        println!();
+                        if let Some(count) = leds["count"].as_u64() {
+                            println!("  LEDs:       {count}");
+                        }
+                        if let Some(fps) = leds["fps"].as_u64() {
+                            println!("  FPS:        {fps}");
+                        }
+                        if let Some(pwr) = leds["pwr"].as_u64() {
+                            if let Some(maxpwr) = leds["maxpwr"].as_u64() {
+                                let pct = if maxpwr > 0 {
+                                    (pwr as f64 / maxpwr as f64 * 100.0) as u64
+                                } else {
+                                    0
+                                };
+                                println!("  Power:      {pwr}/{maxpwr} mA ({pct}%)");
+                            } else {
+                                println!("  Power:      {pwr} mA");
+                            }
+                        }
+                        if let Some(maxseg) = leds["maxseg"].as_u64() {
+                            println!("  Max segs:   {maxseg}");
+                        }
+                    }
+
+                    // Counts
+                    if let Some(fxcount) = info["fxcount"].as_u64() {
+                        println!();
+                        println!("  Effects:    {fxcount}");
+                    }
+                    if let Some(palcount) = info["palcount"].as_u64() {
+                        println!("  Palettes:   {palcount}");
+                    }
+
+                    // Live/WS status
+                    if let Some(live) = info["live"].as_bool() {
+                        if live {
+                            println!();
+                            println!("  Realtime:   active");
+                        }
+                    }
+                    if let Some(ws) = info["ws"].as_i64() {
+                        if ws > 0 {
+                            println!("  WebSocket:  {ws} client(s)");
+                        }
+                    }
+                }
+            }
+            DebugCommands::Live { device, json } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let live = get_device_live(&ip)?;
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&live)?);
+                } else {
+                    println!("Live LED values for device at {ip}:\n");
+
+                    if let Some(leds) = live["leds"].as_array() {
+                        for (i, led) in leds.iter().enumerate() {
+                            if let Some(rgb) = led.as_array() {
+                                let r = rgb.first().and_then(|v| v.as_u64()).unwrap_or(0);
+                                let g = rgb.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+                                let b = rgb.get(2).and_then(|v| v.as_u64()).unwrap_or(0);
+                                println!("  LED {i:>4}: ({r:>3},{g:>3},{b:>3})");
+                            } else if let Some(hex) = led.as_str() {
+                                println!("  LED {i:>4}: {hex}");
+                            } else if let Some(val) = led.as_u64() {
+                                // WLED may return 32-bit integers (BGRAW format)
+                                let r = (val >> 16) & 0xFF;
+                                let g = (val >> 8) & 0xFF;
+                                let b = val & 0xFF;
+                                println!("  LED {i:>4}: ({r:>3},{g:>3},{b:>3})");
+                            }
+                        }
+                        println!("\n  Total: {} LEDs", leds.len());
+                    } else {
+                        // Some firmware returns flat format
+                        println!("{}", serde_json::to_string_pretty(&live)?);
+                    }
+                }
+            }
+            DebugCommands::Effects { device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let effects = get_device_effects(&ip)?;
+
+                println!("Available effects ({} total):\n", effects.len());
+                for (id, name) in effects.iter().enumerate() {
+                    println!("  {id:>3}: {name}");
+                }
+            }
+            DebugCommands::Palettes { device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let palettes = get_device_palettes(&ip)?;
+
+                println!("Available palettes ({} total):\n", palettes.len());
+                for (id, name) in palettes.iter().enumerate() {
+                    println!("  {id:>3}: {name}");
+                }
+            }
+            DebugCommands::Dump { device, output } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let full = get_device_json(&ip)?;
+                let pretty = serde_json::to_string_pretty(&full)?;
+
+                if let Some(path) = output {
+                    std::fs::write(&path, format!("{pretty}\n"))?;
+                    println!("Full state dump written to {path}");
+                } else {
+                    println!("{pretty}");
                 }
             }
         },

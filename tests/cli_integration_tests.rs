@@ -761,6 +761,127 @@ fn test_preset_load_requires_id() {
     cleanup_temp_home(&temp_home);
 }
 
+// Debug command tests
+
+#[test]
+fn test_debug_subcommands_exist() {
+    let temp_home = setup_temp_home();
+
+    // Verify the debug subcommand group is recognized
+    let output = run_command_with_temp_home(&["debug", "--help"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("info"));
+    assert!(stdout.contains("live"));
+    assert!(stdout.contains("effects"));
+    assert!(stdout.contains("palettes"));
+    assert!(stdout.contains("dump"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_info_no_device() {
+    let temp_home = setup_temp_home();
+
+    // No device configured, should fail with "no default device"
+    let output = run_command_with_temp_home(&["debug", "info"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_info_accepts_json_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // Will fail with connection error, but should parse args correctly
+    let output = run_command_with_temp_home(&["debug", "info", "--json"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_info_accepts_device_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["debug", "info", "-d", "test_device"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_effects_no_device() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["debug", "effects"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_palettes_no_device() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["debug", "palettes"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_dump_no_device() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["debug", "dump"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_dump_accepts_output_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["debug", "dump", "-o", "/tmp/wld_test_dump.json"],
+        &temp_home,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_debug_live_accepts_json_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["debug", "live", "--json"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
 // Config command tests
 
 #[test]
