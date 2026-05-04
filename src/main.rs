@@ -143,6 +143,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: SegmentCommands,
     },
+    /// Manage presets
+    Preset {
+        #[command(subcommand)]
+        subcommand: PresetCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -266,6 +271,52 @@ enum SegmentCommands {
         /// Segment ID to delete
         #[arg(long)]
         id: u8,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PresetCommands {
+    /// List all presets on a device
+    List {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Save current state as a preset
+    Save {
+        /// Preset ID (1-250)
+        #[arg(long)]
+        id: u16,
+        /// Preset name
+        #[arg(long)]
+        name: Option<String>,
+        /// Include brightness in preset
+        #[arg(long)]
+        include_brightness: bool,
+        /// Include segment bounds in preset
+        #[arg(long)]
+        include_bounds: bool,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Load a preset
+    Load {
+        /// Preset ID to load
+        #[arg(long)]
+        id: u16,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Delete a preset
+    Delete {
+        /// Preset ID to delete
+        #[arg(long)]
+        id: u16,
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
@@ -448,6 +499,19 @@ pub fn post_device_state(
     }
 
     Ok(())
+}
+
+pub fn get_device_presets(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/presets.json")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    let presets: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(presets)
 }
 
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -729,6 +793,106 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     post_device_state(&ip, &payload)?;
                     println!("Segment {id} deleted on device at {ip}");
+                }
+            }
+        },
+        Commands::Preset { subcommand } => match subcommand {
+            PresetCommands::List { device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let presets = get_device_presets(&ip)?;
+
+                let obj = presets
+                    .as_object()
+                    .ok_or("Invalid presets response from device")?;
+
+                let mut found = false;
+                for (key, value) in obj {
+                    // Skip non-numeric keys (metadata)
+                    if key.parse::<u16>().is_err() {
+                        continue;
+                    }
+                    found = true;
+                    let name = value["n"].as_str().unwrap_or("(unnamed)");
+                    let on = value["on"].as_bool();
+                    let bri = value["bri"].as_u64();
+
+                    let mut details = Vec::new();
+                    if let Some(on) = on {
+                        details.push(if on {
+                            "on".to_string()
+                        } else {
+                            "off".to_string()
+                        });
+                    }
+                    if let Some(bri) = bri {
+                        details.push(format!("brightness={bri}"));
+                    }
+                    let detail_str = if details.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", details.join(", "))
+                    };
+                    println!("  Preset {key}: {name}{detail_str}");
+                }
+
+                if !found {
+                    println!("No presets saved on device at {ip}");
+                }
+            }
+            PresetCommands::Save {
+                id,
+                name,
+                include_brightness,
+                include_bounds,
+                device,
+            } => {
+                if id == 0 || id > 250 {
+                    return Err("Preset ID must be between 1 and 250".into());
+                }
+                let ip = resolve_device_ip(device.as_deref())?;
+
+                let mut payload = json!({"psave": id});
+                if let Some(ref n) = name {
+                    payload["n"] = json!(n);
+                }
+                if include_brightness {
+                    payload["ib"] = json!(true);
+                }
+                if include_bounds {
+                    payload["sb"] = json!(true);
+                }
+
+                if dry_run {
+                    let display_name = name.as_deref().unwrap_or("(unnamed)");
+                    println!("Would save current state as preset {id} ({display_name}) on device at {ip}");
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    let display_name = name.as_deref().unwrap_or("(unnamed)");
+                    println!(
+                        "Saved current state as preset {id} ({display_name}) on device at {ip}"
+                    );
+                }
+            }
+            PresetCommands::Load { id, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let payload = json!({"ps": id});
+
+                if dry_run {
+                    println!("Would load preset {id} on device at {ip}");
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    println!("Loaded preset {id} on device at {ip}");
+                }
+            }
+            PresetCommands::Delete { id, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let payload = json!({"pdel": id});
+
+                if dry_run {
+                    println!("Would delete preset {id} on device at {ip}");
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    println!("Deleted preset {id} on device at {ip}");
                 }
             }
         },

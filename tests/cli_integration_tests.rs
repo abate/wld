@@ -648,6 +648,119 @@ fn test_dry_run_segment_delete() {
     cleanup_temp_home(&temp_home);
 }
 
+// Preset command tests
+
+#[test]
+fn test_preset_save_requires_id() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["preset", "save"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_preset_save_rejects_id_zero() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "preset", "save", "--id", "0"],
+        &temp_home,
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Preset ID must be between 1 and 250"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_preset_save_rejects_id_over_250() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "preset", "save", "--id", "251"],
+        &temp_home,
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Preset ID must be between 1 and 250"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_preset_save() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "preset",
+            "save",
+            "--id",
+            "1",
+            "--name",
+            "My Preset",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would save current state as preset 1"));
+    assert!(stdout.contains("My Preset"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_preset_load() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "preset", "load", "--id", "5"],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would load preset 5"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_preset_delete() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "preset", "delete", "--id", "3"],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would delete preset 3"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_preset_load_requires_id() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["preset", "load"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
 // Config command tests
 
 #[test]
