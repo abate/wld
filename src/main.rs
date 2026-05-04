@@ -3,7 +3,8 @@ mod config;
 #[cfg(feature = "mcp")]
 mod mcp;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use config::{validate_device_address, Config};
 use serde_json::json;
 use std::time::Duration;
@@ -171,6 +172,11 @@ enum Commands {
         /// Skip confirmation prompt before downloading and uploading firmware
         #[arg(short, long)]
         yes: bool,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }
 
@@ -1443,14 +1449,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(pwr) = leds["pwr"].as_u64() {
                             if let Some(maxpwr) = leds["maxpwr"].as_u64() {
                                 if maxpwr > 0 {
-                                    let pct =
-                                        (pwr as f64 / maxpwr as f64 * 100.0) as u64;
-                                    println!("  Power:      {pwr}/{maxpwr} mA ({pct}%)");
+                                    println!(
+                                        "  Power:      {pwr} mA estimated, capped to {maxpwr} mA limit",
+                                    );
                                 } else {
-                                    println!("  Power:      {pwr} mA (no limit)");
+                                    println!("  Power:      {pwr} mA estimated (no limit set)");
                                 }
                             } else {
-                                println!("  Power:      {pwr} mA");
+                                println!("  Power:      {pwr} mA estimated");
                             }
                         }
                         if let Some(maxseg) = leds["maxseg"].as_u64() {
@@ -1862,6 +1868,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "\nFirmware update complete! Device is updating from {current_ver} to {release_ver}."
             );
             println!("The device will reboot automatically. This may take up to 30 seconds.");
+        }
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "wld",
+                &mut std::io::stdout(),
+            );
         }
     }
 

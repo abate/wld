@@ -512,7 +512,17 @@ impl WledMcpServer {
                         }
                     }
                     if let Some(fps) = leds["fps"].as_u64() { output.push_str(&format!("  FPS:        {fps}\n")); }
-                    if let Some(pwr) = leds["pwr"].as_u64() { output.push_str(&format!("  Power:      {pwr} mA\n")); }
+                    if let Some(pwr) = leds["pwr"].as_u64() {
+                        if let Some(maxpwr) = leds["maxpwr"].as_u64() {
+                            if maxpwr > 0 {
+                                output.push_str(&format!("  Power:      {pwr} mA estimated, capped to {maxpwr} mA limit\n"));
+                            } else {
+                                output.push_str(&format!("  Power:      {pwr} mA estimated (no limit set)\n"));
+                            }
+                        } else {
+                            output.push_str(&format!("  Power:      {pwr} mA estimated\n"));
+                        }
+                    }
                 }
                 Ok(output)
             }),
