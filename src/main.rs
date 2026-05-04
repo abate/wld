@@ -706,22 +706,46 @@ pub fn get_device_palettes(ip: &str) -> Result<Vec<String>, Box<dyn std::error::
 }
 
 pub fn get_device_live(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let client = http_client()?;
-    let response = client.get(format!("http://{ip}/json/live")).send()?;
+    use tungstenite::{connect, Message};
 
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
-        return Err(
-            "Live LED data is not available on this device (firmware does not support /json/live)"
-                .into(),
-        );
-    }
-    if !status.is_success() {
-        return Err(format!("Device returned HTTP {status}").into());
+    let url = format!("ws://{ip}/ws");
+    let (mut socket, _response) = connect(&url)
+        .map_err(|e| format!("Failed to connect to WebSocket at {url}: {e}"))?;
+
+    // Request live LED data
+    socket.send(Message::Text("{\"lv\":true}".into()))?;
+
+    // Read frames until we get the live data.
+    // The first frame after connection is usually the state; the lv response comes after.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let msg = socket.read()?;
+        match msg {
+            Message::Text(text) => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    // Live data has a "leds" array
+                    if val.get("leds").is_some() {
+                        let _ = socket.close(None);
+                        return Ok(val);
+                    }
+                }
+            }
+            Message::Binary(data) => {
+                // WLED may send binary live data — try to parse as JSON
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
+                    if val.get("leds").is_some() {
+                        let _ = socket.close(None);
+                        return Ok(val);
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => continue,
+        }
     }
 
-    let text = response.text()?;
-    Ok(serde_json::from_str(&text)?)
+    let _ = socket.close(None);
+    Err("Timed out waiting for live LED data from WebSocket".into())
 }
 
 fn github_client() -> Result<reqwest::blocking::Client, Box<dyn std::error::Error>> {
