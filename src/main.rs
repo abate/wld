@@ -121,6 +121,23 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ConfigureCommands {
+    /// Export full device configuration to a JSON file
+    Export {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Apply a configuration JSON file to a device
+    Apply {
+        /// Path to configuration JSON file
+        file: String,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
     /// Configure WiFi settings
     Wifi {
         /// WiFi network name (SSID)
@@ -301,6 +318,19 @@ pub fn post_device_config(
     Ok(())
 }
 
+pub fn get_device_config(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/cfg")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    let cfg: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(cfg)
+}
+
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
     let config = Config::load()?;
     Ok(config.get_device_ip(device)?)
@@ -455,6 +485,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Configure { subcommand } => match subcommand {
+            ConfigureCommands::Export { device, output } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let device_config = get_device_config(&ip)?;
+                let pretty = serde_json::to_string_pretty(&device_config)?;
+
+                if let Some(path) = output {
+                    std::fs::write(&path, format!("{pretty}\n"))?;
+                    println!("Configuration exported to {path}");
+                } else {
+                    println!("{pretty}");
+                }
+            }
+            ConfigureCommands::Apply { file, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let content = std::fs::read_to_string(&file)?;
+                let payload: serde_json::Value = serde_json::from_str(&content)?;
+
+                if dry_run {
+                    println!("Would apply configuration to device at {ip}:");
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    post_device_config(&ip, &payload)?;
+                    println!("Configuration applied to device at {ip}");
+                }
+            }
             ConfigureCommands::Wifi {
                 ssid,
                 password,
