@@ -359,7 +359,7 @@ enum Commands {
         /// Skip confirmation prompt before downloading and uploading firmware
         #[arg(short, long)]
         yes: bool,
-        /// Path to a local firmware .bin or .bin.gz file to upload directly
+        /// Path to a local firmware .bin or .bin.gz file to upload directly (skips validation)
         #[arg(long, conflicts_with_all = ["version", "platform", "check"])]
         file: Option<String>,
         /// Skip firmware compatibility validation on the device
@@ -2148,7 +2148,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         return Ok(());
                     }
                 }
-                upload_firmware(&ip, firmware, skip_validation).map_err(|e| e.message)?;
+                // Local files lack WLED compatibility metadata, so always skip validation
+                upload_firmware(&ip, firmware, true).map_err(|e| e.message)?;
                 println!("\nFirmware upload complete! Device will reboot automatically.");
                 return Ok(());
             }
