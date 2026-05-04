@@ -509,6 +509,145 @@ fn test_dry_run_delete_does_not_persist() {
     cleanup_temp_home(&temp_home);
 }
 
+// Segment command tests
+
+#[test]
+fn test_segment_set_requires_id() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["segment", "set"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_segment_set_on_off_conflict() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["segment", "set", "--id", "0", "--on", "--off"],
+        &temp_home,
+    );
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_segment_delete_requires_id() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["segment", "delete"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_segment_set() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "segment",
+            "set",
+            "--id",
+            "0",
+            "--start",
+            "0",
+            "--stop",
+            "30",
+            "--color",
+            "255,0,0",
+            "--effect",
+            "1",
+            "--brightness",
+            "200",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would set segment 0"));
+    assert!(stdout.contains("192.168.1.100"));
+    assert!(stdout.contains("255"));
+    assert!(stdout.contains("30"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_segment_set_hex_color() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "segment",
+            "set",
+            "--id",
+            "1",
+            "--color",
+            "#00FF80",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would set segment 1"));
+    // Hex #00FF80 = rgb(0,255,128)
+    assert!(stdout.contains("128"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_segment_set_invalid_color() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "segment",
+            "set",
+            "--id",
+            "0",
+            "--color",
+            "invalid",
+        ],
+        &temp_home,
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Color must be R,G,B") || stderr.contains("color"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_segment_delete() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "segment", "delete", "--id", "2"],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would delete segment 2"));
+
+    cleanup_temp_home(&temp_home);
+}
+
 // Config command tests
 
 #[test]

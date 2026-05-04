@@ -30,6 +30,27 @@ fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parse_color(s: &str) -> Result<[u8; 3], Box<dyn std::error::Error>> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() != 6 {
+            return Err("Hex color must be 6 characters (e.g. #FF0000)".into());
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16)?;
+        let g = u8::from_str_radix(&hex[2..4], 16)?;
+        let b = u8::from_str_radix(&hex[4..6], 16)?;
+        return Ok([r, g, b]);
+    }
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return Err("Color must be R,G,B (e.g. 255,0,0) or #RRGGBB (e.g. #FF0000)".into());
+    }
+    let r: u8 = parts[0].trim().parse()?;
+    let g: u8 = parts[1].trim().parse()?;
+    let b: u8 = parts[2].trim().parse()?;
+    Ok([r, g, b])
+}
+
 fn led_type_to_code(led_type: &str) -> Result<u8, Box<dyn std::error::Error>> {
     match led_type.to_uppercase().as_str() {
         "WS2812B" | "WS2812" => Ok(22),
@@ -117,6 +138,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: ConfigureCommands,
     },
+    /// Manage LED segments
+    Segment {
+        #[command(subcommand)]
+        subcommand: SegmentCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -179,6 +205,67 @@ enum ConfigureCommands {
         /// GPIO pin number for data line
         #[arg(long)]
         pin: Option<u8>,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SegmentCommands {
+    /// List all segments on a device
+    List {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Create or modify a segment
+    Set {
+        /// Segment ID (0-based)
+        #[arg(long)]
+        id: u8,
+        /// First LED index (inclusive)
+        #[arg(long)]
+        start: Option<u16>,
+        /// Last LED index (exclusive)
+        #[arg(long)]
+        stop: Option<u16>,
+        /// Primary color (R,G,B or #RRGGBB)
+        #[arg(long)]
+        color: Option<String>,
+        /// Effect ID
+        #[arg(long)]
+        effect: Option<u8>,
+        /// Effect speed (0-255)
+        #[arg(long)]
+        speed: Option<u8>,
+        /// Effect intensity (0-255)
+        #[arg(long)]
+        intensity: Option<u8>,
+        /// Color palette ID
+        #[arg(long)]
+        palette: Option<u8>,
+        /// Segment brightness (0-255)
+        #[arg(long)]
+        brightness: Option<u8>,
+        /// Turn segment on
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn segment off
+        #[arg(long, conflicts_with = "on")]
+        off: bool,
+        /// Reverse segment direction
+        #[arg(long)]
+        reverse: Option<bool>,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Delete a segment
+    Delete {
+        /// Segment ID to delete
+        #[arg(long)]
+        id: u8,
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
@@ -329,6 +416,38 @@ pub fn get_device_config(ip: &str) -> Result<serde_json::Value, Box<dyn std::err
     let text = response.text()?;
     let cfg: serde_json::Value = serde_json::from_str(&text)?;
     Ok(cfg)
+}
+
+pub fn get_device_state(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let response = client.get(format!("http://{ip}/json/state")).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    let text = response.text()?;
+    let state: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(state)
+}
+
+pub fn post_device_state(
+    ip: &str,
+    payload: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let body = serde_json::to_string(payload)?;
+    let response = client
+        .post(format!("http://{ip}/json/state"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    Ok(())
 }
 
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -484,6 +603,135 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Commands::Segment { subcommand } => match subcommand {
+            SegmentCommands::List { device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let state = get_device_state(&ip)?;
+
+                let segments = state["seg"]
+                    .as_array()
+                    .ok_or("No segments found in device state")?;
+
+                if segments.is_empty() {
+                    println!("No segments configured");
+                } else {
+                    println!("Segments on device at {ip}:\n");
+                    for seg in segments {
+                        let id = seg["id"].as_u64().unwrap_or(0);
+                        let start = seg["start"].as_u64().unwrap_or(0);
+                        let stop = seg["stop"].as_u64().unwrap_or(0);
+                        let on = seg["on"].as_bool().unwrap_or(false);
+                        let bri = seg["bri"].as_u64().unwrap_or(0);
+                        let fx = seg["fx"].as_u64().unwrap_or(0);
+                        let sx = seg["sx"].as_u64().unwrap_or(0);
+                        let ix = seg["ix"].as_u64().unwrap_or(0);
+                        let pal = seg["pal"].as_u64().unwrap_or(0);
+                        let rev = seg["rev"].as_bool().unwrap_or(false);
+
+                        let status = if on { "ON" } else { "OFF" };
+                        println!("  Segment {id}: LEDs {start}-{stop} ({status})");
+                        println!(
+                            "    brightness={bri} effect={fx} speed={sx} intensity={ix} palette={pal} reverse={rev}"
+                        );
+
+                        if let Some(colors) = seg["col"].as_array() {
+                            let color_strs: Vec<String> = colors
+                                .iter()
+                                .filter_map(|c| {
+                                    c.as_array().map(|rgb| {
+                                        let vals: Vec<u64> =
+                                            rgb.iter().filter_map(|v| v.as_u64()).collect();
+                                        format!(
+                                            "({},{},{})",
+                                            vals.first().unwrap_or(&0),
+                                            vals.get(1).unwrap_or(&0),
+                                            vals.get(2).unwrap_or(&0)
+                                        )
+                                    })
+                                })
+                                .collect();
+                            if !color_strs.is_empty() {
+                                println!("    colors: {}", color_strs.join(" "));
+                            }
+                        }
+                    }
+                }
+            }
+            SegmentCommands::Set {
+                id,
+                start,
+                stop,
+                color,
+                effect,
+                speed,
+                intensity,
+                palette,
+                brightness,
+                on,
+                off,
+                reverse,
+                device,
+            } => {
+                let parsed_color = color.as_ref().map(|c| parse_color(c)).transpose()?;
+                let ip = resolve_device_ip(device.as_deref())?;
+
+                let mut seg = json!({"id": id});
+                if let Some(s) = start {
+                    seg["start"] = json!(s);
+                }
+                if let Some(s) = stop {
+                    seg["stop"] = json!(s);
+                }
+                if let Some(rgb) = parsed_color {
+                    seg["col"] = json!([[rgb[0], rgb[1], rgb[2]]]);
+                }
+                if let Some(fx) = effect {
+                    seg["fx"] = json!(fx);
+                }
+                if let Some(sx) = speed {
+                    seg["sx"] = json!(sx);
+                }
+                if let Some(ix) = intensity {
+                    seg["ix"] = json!(ix);
+                }
+                if let Some(pal) = palette {
+                    seg["pal"] = json!(pal);
+                }
+                if let Some(bri) = brightness {
+                    seg["bri"] = json!(bri);
+                }
+                if on {
+                    seg["on"] = json!(true);
+                }
+                if off {
+                    seg["on"] = json!(false);
+                }
+                if let Some(rev) = reverse {
+                    seg["rev"] = json!(rev);
+                }
+
+                let payload = json!({"seg": [seg]});
+
+                if dry_run {
+                    println!("Would set segment {id} on device at {ip}:");
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    println!("Segment {id} updated on device at {ip}");
+                }
+            }
+            SegmentCommands::Delete { id, device } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let payload = json!({"seg": [{"id": id, "stop": 0}]});
+
+                if dry_run {
+                    println!("Would delete segment {id} on device at {ip}");
+                } else {
+                    post_device_state(&ip, &payload)?;
+                    println!("Segment {id} deleted on device at {ip}");
+                }
+            }
+        },
         Commands::Configure { subcommand } => match subcommand {
             ConfigureCommands::Export { device, output } => {
                 let ip = resolve_device_ip(device.as_deref())?;
