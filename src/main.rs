@@ -629,8 +629,15 @@ pub fn get_device_live(ip: &str) -> Result<serde_json::Value, Box<dyn std::error
     let client = http_client()?;
     let response = client.get(format!("http://{ip}/json/live")).send()?;
 
-    if !response.status().is_success() {
-        return Err(format!("Device returned HTTP {}", response.status()).into());
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
+        return Err(
+            "Live LED data is not available on this device (firmware does not support /json/live)"
+                .into(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!("Device returned HTTP {status}").into());
     }
 
     let text = response.text()?;
@@ -1239,12 +1246,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if let Some(pwr) = leds["pwr"].as_u64() {
                             if let Some(maxpwr) = leds["maxpwr"].as_u64() {
-                                let pct = if maxpwr > 0 {
-                                    (pwr as f64 / maxpwr as f64 * 100.0) as u64
+                                if maxpwr > 0 {
+                                    let pct =
+                                        (pwr as f64 / maxpwr as f64 * 100.0) as u64;
+                                    println!("  Power:      {pwr}/{maxpwr} mA ({pct}%)");
                                 } else {
-                                    0
-                                };
-                                println!("  Power:      {pwr}/{maxpwr} mA ({pct}%)");
+                                    println!("  Power:      {pwr} mA (no limit)");
+                                }
                             } else {
                                 println!("  Power:      {pwr} mA");
                             }
@@ -1520,16 +1528,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let current_ver = info["ver"].as_str().unwrap_or("unknown");
             let arch = info["arch"].as_str().unwrap_or("");
 
+            // Use 'release' field first (more specific, e.g. "ESP02"), fall back to 'arch'
+            let release = info["release"].as_str().unwrap_or("");
             let target_platform = match &platform {
                 Some(p) => p.clone(),
                 None => {
-                    if arch.is_empty() {
+                    if !release.is_empty() {
+                        release.to_string()
+                    } else if !arch.is_empty() {
+                        arch_to_default_platform(arch).to_string()
+                    } else {
                         return Err(
                             "Could not detect device platform. Use --platform to specify it."
                                 .into(),
                         );
                     }
-                    arch_to_default_platform(arch).to_string()
                 }
             };
 
@@ -1559,7 +1572,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             if dry_run {
                 println!("\nWould download {asset_name} and upload to device at {ip}");
-                println!("  Upgrade: {current_ver} -> {release_ver}");
+                println!("  {current_ver} -> {release_ver}");
                 return Ok(());
             }
 
@@ -1575,7 +1588,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("Uploading firmware to device at {ip}...");
             upload_firmware(&ip, firmware)?;
             println!(
-                "\nFirmware update complete! Device is upgrading from {current_ver} to {release_ver}."
+                "\nFirmware update complete! Device is updating from {current_ver} to {release_ver}."
             );
             println!("The device will reboot automatically. This may take up to 30 seconds.");
         }
