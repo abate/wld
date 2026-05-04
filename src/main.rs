@@ -878,10 +878,10 @@ fn find_firmware_asset(
         format!("WLED_{version}_{platform}.bin"),
     ];
 
-    // Try exact matches first
-    for asset in assets {
-        let name = asset["name"].as_str().unwrap_or("");
-        for candidate in &candidates {
+    // Try exact matches — iterate candidates first to preserve .bin.gz preference
+    for candidate in &candidates {
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap_or("");
             if name == candidate {
                 let url = asset["browser_download_url"]
                     .as_str()
