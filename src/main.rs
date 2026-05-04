@@ -597,6 +597,35 @@ pub fn post_device_config(
     Ok(())
 }
 
+fn wled_led_type_name(type_id: u64) -> &'static str {
+    match type_id {
+        22 => "WS2812B",
+        24 => "WS2811",
+        25 => "WS2813",
+        26 => "APA106",
+        27 => "WS2815",
+        28 => "LC8812",
+        29 => "WS2805",
+        30 => "SK6812",
+        31 => "TM1814",
+        32 => "UCS8903",
+        33 => "APA109",
+        34 => "UCS8904",
+        40 => "On/Off",
+        41 => "PWM White",
+        42 => "PWM CCT",
+        43 => "PWM RGB",
+        44 => "PWM RGBW",
+        45 => "PWM RGB+CCT",
+        50 => "WS2801",
+        51 => "APA102",
+        52 => "LPD8806",
+        53 => "P9813",
+        54 => "LPD6803",
+        _ => "Unknown",
+    }
+}
+
 pub fn get_device_config(ip: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let client = http_client()?;
     let response = client.get(format!("http://{ip}/json/cfg")).send()?;
@@ -731,12 +760,30 @@ pub fn get_device_live(ip: &str) -> Result<serde_json::Value, Box<dyn std::error
                 }
             }
             Message::Binary(data) => {
-                // WLED may send binary live data — try to parse as JSON
-                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
-                    if val.get("leds").is_some() {
-                        let _ = socket.close(None);
-                        return Ok(val);
+                // WLED sends live LED data as binary frames:
+                // byte 0: 0x4c ('L') = live data marker
+                // byte 1: mode (1 = RGB, 2 = RGBW)
+                // remaining: pixel data (3 bytes per LED for RGB, 4 for RGBW)
+                if data.len() >= 2 && data[0] == 0x4c {
+                    let mode = data[1];
+                    let pixel_data = &data[2..];
+                    let bytes_per_led: usize = if mode == 2 { 4 } else { 3 };
+                    let num_leds = pixel_data.len() / bytes_per_led;
+                    let mut leds = Vec::with_capacity(num_leds);
+                    for i in 0..num_leds {
+                        let offset = i * bytes_per_led;
+                        let r = pixel_data[offset] as u32;
+                        let g = pixel_data[offset + 1] as u32;
+                        let b = pixel_data[offset + 2] as u32;
+                        // Encode as hex color string
+                        leds.push(serde_json::json!(format!("{r:02X}{g:02X}{b:02X}")));
                     }
+                    let _ = socket.close(None);
+                    return Ok(serde_json::json!({
+                        "leds": leds,
+                        "n": num_leds,
+                        "mode": if mode == 2 { "RGBW" } else { "RGB" },
+                    }));
                 }
             }
             Message::Close(_) => break,
@@ -1373,7 +1420,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(leds) = info.get("leds") {
                         println!();
                         if let Some(count) = leds["count"].as_u64() {
-                            println!("  LEDs:       {count}");
+                            // Fetch LED type from config
+                            let led_type = get_device_config(&ip)
+                                .ok()
+                                .and_then(|cfg| {
+                                    cfg["hw"]["led"]["ins"]
+                                        .as_array()?
+                                        .first()?
+                                        .get("type")?
+                                        .as_u64()
+                                })
+                                .map(wled_led_type_name);
+                            if let Some(lt) = led_type {
+                                println!("  LEDs:       {count} ({lt})");
+                            } else {
+                                println!("  LEDs:       {count}");
+                            }
                         }
                         if let Some(fps) = leds["fps"].as_u64() {
                             println!("  FPS:        {fps}");
@@ -1436,7 +1498,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 let b = rgb.get(2).and_then(|v| v.as_u64()).unwrap_or(0);
                                 println!("  LED {i:>4}: ({r:>3},{g:>3},{b:>3})");
                             } else if let Some(hex) = led.as_str() {
-                                println!("  LED {i:>4}: {hex}");
+                                if hex.len() == 6 {
+                                    if let (Ok(r), Ok(g), Ok(b)) = (
+                                        u8::from_str_radix(&hex[0..2], 16),
+                                        u8::from_str_radix(&hex[2..4], 16),
+                                        u8::from_str_radix(&hex[4..6], 16),
+                                    ) {
+                                        println!("  LED {i:>4}: ({r:>3},{g:>3},{b:>3})");
+                                    } else {
+                                        println!("  LED {i:>4}: #{hex}");
+                                    }
+                                } else {
+                                    println!("  LED {i:>4}: #{hex}");
+                                }
                             } else if let Some(val) = led.as_u64() {
                                 // WLED may return 32-bit integers (BGRAW format)
                                 let r = (val >> 16) & 0xFF;

@@ -250,10 +250,14 @@ wld mcp
 | `wled_status` | Check status of all devices |
 | `wled_segment_list` | List all segments |
 | `wled_segment_set` | Create or update a segment (id, start, stop, color, effect, speed, intensity, palette, brightness, on) |
+| `wled_segment_delete` | Delete a segment by ID |
 | `wled_preset_list` | List all presets |
 | `wled_preset_save` | Save current state as a preset (id, name) |
 | `wled_preset_load` | Load a preset by ID |
-| `wled_debug_info` | Get device info as formatted text |
+| `wled_preset_delete` | Delete a preset by ID |
+| `wled_debug_info` | Get device info (including LED type) as formatted text |
+| `wled_debug_effects` | List all available effects with IDs |
+| `wled_debug_palettes` | List all available color palettes with IDs |
 | `wled_config_export` | Export device config as JSON string |
 | `wled_config_diff` | Compare expected JSON config against device and return diff |
 

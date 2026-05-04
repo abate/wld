@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::{
-    get_device_config, get_device_info, get_device_presets, get_device_state, get_device_status,
-    parse_color, post_device_state, set_device_brightness, set_device_power, DeviceStatus,
+    get_device_config, get_device_effects, get_device_info, get_device_palettes, get_device_presets,
+    get_device_state, get_device_status, parse_color, post_device_state, set_device_brightness,
+    set_device_power, wled_led_type_name, DeviceStatus,
 };
 use serde_json::json;
 
@@ -499,7 +500,17 @@ impl WledMcpServer {
                     }
                 }
                 if let Some(leds) = info.get("leds") {
-                    if let Some(count) = leds["count"].as_u64() { output.push_str(&format!("  LEDs:       {count}\n")); }
+                    if let Some(count) = leds["count"].as_u64() {
+                        let led_type = get_device_config(&ip)
+                            .ok()
+                            .and_then(|cfg| cfg["hw"]["led"]["ins"].as_array()?.first()?.get("type")?.as_u64())
+                            .map(wled_led_type_name);
+                        if let Some(lt) = led_type {
+                            output.push_str(&format!("  LEDs:       {count} ({lt})\n"));
+                        } else {
+                            output.push_str(&format!("  LEDs:       {count}\n"));
+                        }
+                    }
                     if let Some(fps) = leds["fps"].as_u64() { output.push_str(&format!("  FPS:        {fps}\n")); }
                     if let Some(pwr) = leds["pwr"].as_u64() { output.push_str(&format!("  Power:      {pwr} mA\n")); }
                 }
@@ -568,6 +579,122 @@ impl WledMcpServer {
                     }
                     Ok(output)
                 }
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(output))) => Ok(CallToolResult::success(vec![Content::text(output)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
+        }
+    }
+
+    #[tool(description = "Delete a segment on the WLED device")]
+    async fn wled_segment_delete(
+        &self,
+        Parameters(params): Parameters<WledPresetIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let device = params.device.clone();
+        let id = params.id;
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
+                let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
+                let payload = json!({"seg": [{"id": id, "stop": 0}]});
+                post_device_state(&ip, &payload).map_err(|e| e.to_string())?;
+                Ok(format!("Segment {id} deleted on device at {ip}"))
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(msg))) => Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
+        }
+    }
+
+    #[tool(description = "Delete a preset on the WLED device")]
+    async fn wled_preset_delete(
+        &self,
+        Parameters(params): Parameters<WledPresetIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let device = params.device.clone();
+        let id = params.id;
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
+                let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
+                let payload = json!({"pdel": id});
+                post_device_state(&ip, &payload).map_err(|e| e.to_string())?;
+                Ok(format!("Deleted preset {id} on device at {ip}"))
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(msg))) => Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
+        }
+    }
+
+    #[tool(description = "List all available effects on the WLED device")]
+    async fn wled_debug_effects(
+        &self,
+        Parameters(params): Parameters<WledDeviceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let device = params.device.clone();
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
+                let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
+                let effects = get_device_effects(&ip).map_err(|e| e.to_string())?;
+                let mut output = format!("Available effects ({} total):\n\n", effects.len());
+                for (i, name) in effects.iter().enumerate() {
+                    output.push_str(&format!("  {i:>3}: {name}\n"));
+                }
+                Ok(output)
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(output))) => Ok(CallToolResult::success(vec![Content::text(output)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
+        }
+    }
+
+    #[tool(description = "List all available color palettes on the WLED device")]
+    async fn wled_debug_palettes(
+        &self,
+        Parameters(params): Parameters<WledDeviceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let device = params.device.clone();
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
+                let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
+                let palettes = get_device_palettes(&ip).map_err(|e| e.to_string())?;
+                let mut output = format!("Available palettes ({} total):\n\n", palettes.len());
+                for (i, name) in palettes.iter().enumerate() {
+                    output.push_str(&format!("  {i:>3}: {name}\n"));
+                }
+                Ok(output)
             }),
         )
         .await
