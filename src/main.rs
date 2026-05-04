@@ -1137,7 +1137,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let rev = seg["rev"].as_bool().unwrap_or(false);
 
                         let status = if on { "ON" } else { "OFF" };
-                        println!("  Segment {id}: LEDs {start}-{stop} ({status})");
+                        let name = seg["n"]
+                            .as_str()
+                            .filter(|n| !n.is_empty())
+                            .map(|n| format!(" \"{n}\""))
+                            .unwrap_or_default();
+                        println!("  Segment {id}{name}: LEDs {start}-{stop} ({status})");
                         println!(
                             "    brightness={bri} effect={fx} speed={sx} intensity={ix} palette={pal} reverse={rev}"
                         );

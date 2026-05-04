@@ -290,7 +290,12 @@ impl WledMcpServer {
                     let ix = seg["ix"].as_u64().unwrap_or(0);
                     let pal = seg["pal"].as_u64().unwrap_or(0);
                     let status = if on { "ON" } else { "OFF" };
-                    output.push_str(&format!("  Segment {id}: LEDs {start}-{stop} ({status})\n"));
+                    let name = seg["n"]
+                        .as_str()
+                        .filter(|n| !n.is_empty())
+                        .map(|n| format!(" \"{n}\""))
+                        .unwrap_or_default();
+                    output.push_str(&format!("  Segment {id}{name}: LEDs {start}-{stop} ({status})\n"));
                     output.push_str(&format!(
                         "    brightness={bri} effect={fx} speed={sx} intensity={ix} palette={pal}\n"
                     ));
