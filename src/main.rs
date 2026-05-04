@@ -5,6 +5,8 @@ mod mcp;
 
 use clap::{Parser, Subcommand};
 use config::{validate_device_address, Config};
+use serde_json::json;
+use std::time::Duration;
 use wled_json_api_library::structures::state::State;
 use wled_json_api_library::wled::Wled;
 
@@ -32,6 +34,9 @@ fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 #[command(name = "wld")]
 #[command(about = "Control WLED lights from your terminal", long_about = None)]
 struct Cli {
+    /// Preview changes without applying them
+    #[arg(long, global = true)]
+    dry_run: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -195,13 +200,23 @@ pub fn get_device_status(ip: &str) -> DeviceStatus {
     }
 }
 
+fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    let config = Config::load()?;
+    Ok(config.get_device_ip(device)?)
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let dry_run = cli.dry_run;
 
     match cli.command {
         Commands::Add { name, ip } => {
             validate_device_name(&name)?;
             validate_device_address(&ip)?;
+            if dry_run {
+                println!("Would add device '{name}' with IP {ip}");
+                return Ok(());
+            }
             let mut config = Config::load()?;
             config.add_device(name.clone(), ip.clone());
             config.save()?;
@@ -212,6 +227,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Delete { name } => {
+            if dry_run {
+                let config = Config::load()?;
+                if !config.devices.contains_key(&name) {
+                    return Err(format!("Device '{name}' not found").into());
+                }
+                println!("Would delete device '{name}'");
+                return Ok(());
+            }
             let mut config = Config::load()?;
             config.remove_device(&name)?;
             config.save()?;
@@ -236,15 +259,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::SetDefault { name } => {
+            if dry_run {
+                let config = Config::load()?;
+                if !config.devices.contains_key(&name) {
+                    return Err(format!("Device '{name}' not found").into());
+                }
+                println!("Would set '{name}' as the default device");
+                return Ok(());
+            }
             let mut config = Config::load()?;
             config.set_default(&name)?;
             config.save()?;
             println!("Set '{name}' as the default device");
         }
         Commands::On { device } => {
+            if dry_run {
+                let ip = resolve_device_ip(device.as_deref())?;
+                println!("Would turn on device at {ip}");
+                return Ok(());
+            }
             set_device_power(device.as_deref(), true)?;
         }
         Commands::Off { device } => {
+            if dry_run {
+                let ip = resolve_device_ip(device.as_deref())?;
+                println!("Would turn off device at {ip}");
+                return Ok(());
+            }
             set_device_power(device.as_deref(), false)?;
         }
         #[cfg(feature = "mcp")]
@@ -257,15 +298,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             percentage,
         } => {
             let brightness = if percentage {
-                // Validate percentage is 0-100
                 if value > 100 {
-                    return Err(format!("Percentage must be between 0 and 100, got {value}").into());
+                    return Err(
+                        format!("Percentage must be between 0 and 100, got {value}").into()
+                    );
                 }
-                // Convert percentage to 0-255 range
                 ((value as u16 * 255) / 100) as u8
             } else {
                 value
             };
+            if dry_run {
+                let ip = resolve_device_ip(device.as_deref())?;
+                println!("Would set brightness to {brightness} on device at {ip}");
+                return Ok(());
+            }
             set_device_brightness(device.as_deref(), brightness)?;
         }
         Commands::Status => {

@@ -425,3 +425,86 @@ fn test_brightness_percentage_with_specific_device() {
 
     cleanup_temp_home(&temp_home);
 }
+
+// Dry-run tests
+
+#[test]
+fn test_dry_run_on() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["--dry-run", "on"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would turn on"));
+    assert!(stdout.contains("192.168.1.100"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_off() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["--dry-run", "off"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would turn off"));
+    assert!(stdout.contains("192.168.1.100"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_brightness() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["--dry-run", "brightness", "128"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would set brightness to 128"));
+    assert!(stdout.contains("192.168.1.100"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_add_does_not_persist() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(
+        &["--dry-run", "add", "test_device", "192.168.1.100"],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would add device"));
+
+    // Verify device was NOT actually added
+    let ls_output = run_command_with_temp_home(&["ls"], &temp_home);
+    let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
+    assert!(ls_stdout.contains("No devices saved"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_delete_does_not_persist() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["--dry-run", "delete", "test_device"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would delete device"));
+
+    // Verify device was NOT actually deleted
+    let ls_output = run_command_with_temp_home(&["ls"], &temp_home);
+    let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
+    assert!(ls_stdout.contains("test_device"));
+
+    cleanup_temp_home(&temp_home);
+}
