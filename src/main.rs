@@ -4,12 +4,98 @@ mod config;
 mod mcp;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use clap_complete::Shell;
 use config::{validate_device_address, Config};
 use serde_json::json;
 use std::time::Duration;
 use wled_json_api_library::structures::state::State;
 use wled_json_api_library::wled::Wled;
+
+fn complete_devices(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_str().unwrap_or("");
+    Config::load()
+        .ok()
+        .map(|cfg| {
+            cfg.devices
+                .keys()
+                .filter(|name| name.starts_with(prefix))
+                .map(|name| CompletionCandidate::new(name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn complete_segments(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_str().unwrap_or("");
+    let ip = Config::load()
+        .ok()
+        .and_then(|cfg| cfg.get_device_ip(None).ok());
+    let Some(ip) = ip else {
+        return vec![];
+    };
+    get_device_state(&ip)
+        .ok()
+        .and_then(|state| {
+            let segs = state["seg"].as_array()?;
+            Some(
+                segs.iter()
+                    .enumerate()
+                    .filter_map(|(i, seg)| {
+                        let id = seg["id"].as_u64().unwrap_or(i as u64);
+                        let id_str = id.to_string();
+                        if !id_str.starts_with(prefix) {
+                            return None;
+                        }
+                        let name = seg["n"].as_str().unwrap_or("");
+                        let mut c = CompletionCandidate::new(id_str);
+                        if !name.is_empty() {
+                            c = c.help(Some(name.to_string().into()));
+                        }
+                        Some(c)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn complete_presets(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_str().unwrap_or("");
+    let ip = Config::load()
+        .ok()
+        .and_then(|cfg| cfg.get_device_ip(None).ok());
+    let Some(ip) = ip else {
+        return vec![];
+    };
+    get_device_presets(&ip)
+        .ok()
+        .and_then(|presets| {
+            let obj = presets.as_object()?;
+            Some(
+                obj.iter()
+                    .filter_map(|(key, val)| {
+                        // Skip non-numeric keys (e.g. "0" is the state)
+                        let id: u16 = key.parse().ok()?;
+                        if id == 0 {
+                            return None;
+                        }
+                        let id_str = id.to_string();
+                        if !id_str.starts_with(prefix) {
+                            return None;
+                        }
+                        let name = val["n"].as_str().unwrap_or("");
+                        let mut c = CompletionCandidate::new(id_str);
+                        if !name.is_empty() {
+                            c = c.help(Some(name.to_string().into()));
+                        }
+                        Some(c)
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
 
 fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     if name.is_empty() {
@@ -75,7 +161,21 @@ fn led_type_to_code(led_type: &str) -> Result<u8, Box<dyn std::error::Error>> {
 
 #[derive(Parser)]
 #[command(name = "wld")]
-#[command(about = "Control WLED lights from your terminal", long_about = None)]
+#[command(
+    about = "Control WLED lights from your terminal",
+    long_about = "Control WLED lights from your terminal.\n\n\
+        Manage devices, adjust brightness, control segments and presets, \
+        update firmware, and expose an MCP server for AI agent integration.\n\n\
+        Get started:\n  \
+        wld add bedroom 192.168.1.100   Add a device\n  \
+        wld on                          Turn on the default device\n  \
+        wld brightness 128              Set brightness\n  \
+        wld status                      Check all devices\n\n\
+        Shell completions (dynamic):\n  \
+        source <(COMPLETE=bash wld)     Bash\n  \
+        source <(COMPLETE=zsh wld)      Zsh\n  \
+        COMPLETE=fish wld | source      Fish"
+)]
 struct Cli {
     /// Preview changes without applying them
     #[arg(long, global = true)]
@@ -87,6 +187,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Add a new WLED device
+    #[command(long_about = "Add a new WLED device.\n\n\
+        Saves a device name and IP address to ~/.wld.toml. The first device \
+        added automatically becomes the default.\n\n\
+        Examples:\n  \
+        wld add bedroom 192.168.1.100\n  \
+        wld add kitchen 10.0.0.42")]
     Add {
         /// Name for the device
         name: String,
@@ -94,67 +200,148 @@ enum Commands {
         ip: String,
     },
     /// Delete a saved device
+    #[command(long_about = "Delete a saved device.\n\n\
+        Removes the device from ~/.wld.toml. If the deleted device was the \
+        default, the next available device becomes the new default.")]
     Delete {
         /// Name of the device to delete
         name: String,
     },
     /// List all saved devices
+    #[command(long_about = "List all saved devices.\n\n\
+        Shows all devices in ~/.wld.toml with their IP addresses. \
+        The default device is marked with an asterisk (*).")]
     Ls,
     /// Set the default device
+    #[command(long_about = "Set the default device.\n\n\
+        Commands that accept --device will use this device when no \
+        device is explicitly specified.\n\n\
+        Example:\n  wld set-default bedroom")]
     SetDefault {
         /// Name of the device to set as default
         name: String,
     },
     /// Turn device on
+    #[command(long_about = "Turn device on.\n\n\
+        Powers on the device, restoring its previous color and effect state.\n\n\
+        Examples:\n  \
+        wld on                        Turn on default device\n  \
+        wld on -d kitchen             Turn on a specific device\n  \
+        wld on -d 192.168.1.100       Turn on by IP address")]
     On {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Turn device off
+    #[command(long_about = "Turn device off.\n\n\
+        Powers off the device LEDs. The device stays connected to WiFi \
+        and can be turned back on remotely.\n\n\
+        Examples:\n  \
+        wld off                       Turn off default device\n  \
+        wld off -d bedroom            Turn off a specific device")]
     Off {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Start a MCP (Model Context Protocol) server for controlling WLED devices
     #[cfg(feature = "mcp")]
+    #[command(long_about = "Start a MCP (Model Context Protocol) server.\n\n\
+        Runs an MCP server over stdio that exposes WLED control as tools \
+        for AI agents (Claude, etc.). Supports device discovery, power \
+        control, brightness, segments, presets, and debug tools.\n\n\
+        Typically configured in your MCP client, not run directly.")]
     Mcp,
     /// Set device brightness (0-255)
+    #[command(long_about = "Set device brightness.\n\n\
+        Accepts a value from 0 (off) to 255 (max), or 0-100 with --percentage.\n\n\
+        Examples:\n  \
+        wld brightness 128            Set to ~50% brightness\n  \
+        wld brightness 75 -p          Set to 75% using percentage\n  \
+        wld brightness 255 -d kitchen Full brightness on specific device")]
     Brightness {
         /// Brightness level (0-255, or 0-100 if --percentage is used)
         value: u8,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Interpret value as a percentage (0-100) instead of 0-255
         #[arg(short, long)]
         percentage: bool,
     },
     /// Check status of all configured devices
+    #[command(long_about = "Check status of all configured devices.\n\n\
+        Pings each saved device and shows whether it's on/off, its \
+        brightness, and current effect. The default device is marked \
+        with an asterisk (*).")]
     Status,
     /// Configure device settings (WiFi, OTA, LEDs)
-    #[command(name = "config")]
+    #[command(name = "config", long_about = "Configure device settings.\n\n\
+        Manage WiFi, OTA (firmware update), and LED hardware settings. \
+        You can also export/import the full device configuration as JSON.\n\n\
+        Examples:\n  \
+        wld config export -o backup.json       Back up device config\n  \
+        wld config wifi --ssid MyNetwork --password secret\n  \
+        wld config ota --unlock --password wledota\n  \
+        wld config led --count 60 --led-type WS2812B")]
     Configure {
         #[command(subcommand)]
         subcommand: ConfigureCommands,
     },
     /// Manage LED segments
+    #[command(long_about = "Manage LED segments.\n\n\
+        Segments divide your LED strip into independently controlled \
+        sections, each with its own color, effect, speed, and brightness.\n\n\
+        Examples:\n  \
+        wld segment list                       Show all segments\n  \
+        wld segment set --id 0 --color #FF0000 Set color to red\n  \
+        wld segment set --id 1 --effect 42 --speed 128\n  \
+        wld segment export -o segments.json    Back up segments")]
     Segment {
         #[command(subcommand)]
         subcommand: SegmentCommands,
     },
     /// Manage presets
+    #[command(long_about = "Manage presets.\n\n\
+        Presets save the complete device state (colors, effects, segments) \
+        so you can recall them later. IDs range from 1 to 250.\n\n\
+        Examples:\n  \
+        wld preset list                        Show all presets\n  \
+        wld preset save --id 1 --name \"Movie\"  Save current state\n  \
+        wld preset load --id 1                 Recall a preset\n  \
+        wld preset delete --id 3               Remove a preset")]
     Preset {
         #[command(subcommand)]
         subcommand: PresetCommands,
     },
     /// Debug and inspect device state
+    #[command(long_about = "Debug and inspect device state.\n\n\
+        Tools for inspecting device internals: hardware info, live LED \
+        values, available effects and palettes, and raw JSON dumps.\n\n\
+        Examples:\n  \
+        wld debug info              Version, WiFi, memory, LEDs\n  \
+        wld debug info --json       Raw JSON output\n  \
+        wld debug live              Live LED RGB values\n  \
+        wld debug effects           List all effects\n  \
+        wld debug watch             Continuously poll device stats")]
     Debug {
         #[command(subcommand)]
         subcommand: DebugCommands,
     },
     /// Update device firmware from GitHub releases
+    #[command(long_about = "Update device firmware from GitHub releases.\n\n\
+        Downloads firmware from the WLED GitHub releases and uploads it \
+        to the device via HTTP OTA. Auto-detects platform (ESP8266, ESP32, etc.) \
+        and prefers .bin format, falling back to .bin.gz if the device \
+        reports \"Not Enough Space\".\n\n\
+        OTA must be unlocked before updating. The default OTA password \
+        is \"wledota\".\n\n\
+        Examples:\n  \
+        wld update --check            Check for updates without installing\n  \
+        wld update                    Update to latest release\n  \
+        wld update --version 0.15.0   Update to a specific version\n  \
+        wld update -y                 Skip confirmation prompt")]
     Update {
         /// Target version (e.g. "0.15.0" or "v0.15.0"). Defaults to latest release.
         #[arg(long)]
@@ -164,7 +351,7 @@ enum Commands {
         #[arg(long)]
         platform: Option<String>,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Only show version comparison and available firmware without downloading
         #[arg(long)]
@@ -172,6 +359,12 @@ enum Commands {
         /// Skip confirmation prompt before downloading and uploading firmware
         #[arg(short, long)]
         yes: bool,
+        /// Path to a local firmware .bin or .bin.gz file to upload directly
+        #[arg(long, conflicts_with_all = ["version", "platform", "check"])]
+        file: Option<String>,
+        /// Skip firmware compatibility validation on the device
+        #[arg(long)]
+        skip_validation: bool,
     },
     /// Generate shell completions
     Completions {
@@ -183,9 +376,16 @@ enum Commands {
 #[derive(Subcommand)]
 enum ConfigureCommands {
     /// Export full device configuration to a JSON file
+    #[command(long_about = "Export full device configuration to a JSON file.\n\n\
+        Fetches the complete configuration from the device's /json/cfg \
+        endpoint and saves it as pretty-printed JSON. Useful for backups \
+        before firmware updates.\n\n\
+        Examples:\n  \
+        wld config export                  Print to stdout\n  \
+        wld config export -o backup.json   Save to file")]
     Export {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Output file path (prints to stdout if not specified)
         #[arg(short, long)]
@@ -196,7 +396,7 @@ enum ConfigureCommands {
         /// Path to configuration JSON file
         file: String,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Configure WiFi settings
@@ -214,7 +414,7 @@ enum ConfigureCommands {
         #[arg(long, value_parser = ["n", "g"])]
         phy_mode: Option<String>,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Configure OTA (Over-The-Air) update settings
@@ -222,14 +422,14 @@ enum ConfigureCommands {
         /// Lock OTA updates to prevent firmware changes
         #[arg(long, conflicts_with = "unlock")]
         lock: bool,
-        /// Unlock OTA updates to allow firmware changes
+        /// Unlock OTA updates to allow firmware changes (requires --password)
         #[arg(long, conflicts_with = "lock")]
         unlock: bool,
-        /// Set OTA password
+        /// OTA password (required for --unlock when OTA is locked)
         #[arg(long)]
         password: Option<String>,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Configure LED strip settings
@@ -247,7 +447,7 @@ enum ConfigureCommands {
         #[arg(long)]
         pin: Option<u8>,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Show differences between a local config file and the device config
@@ -255,7 +455,7 @@ enum ConfigureCommands {
         /// Path to local configuration JSON file
         file: String,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
 }
@@ -265,13 +465,13 @@ enum SegmentCommands {
     /// List all segments on a device
     List {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Create or modify a segment
     Set {
         /// Segment ID (0-based)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_segments))]
         id: u8,
         /// First LED index (inclusive)
         #[arg(long)]
@@ -307,22 +507,22 @@ enum SegmentCommands {
         #[arg(long)]
         reverse: Option<bool>,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Delete a segment
     Delete {
         /// Segment ID to delete
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_segments))]
         id: u8,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Export segments to a JSON file
     Export {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Output file path (prints to stdout if not specified)
         #[arg(short, long)]
@@ -333,7 +533,7 @@ enum SegmentCommands {
         /// Path to JSON file containing segment array
         file: String,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
 }
@@ -343,13 +543,13 @@ enum PresetCommands {
     /// List all presets on a device
     List {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Save current state as a preset
     Save {
         /// Preset ID (1-250)
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_presets))]
         id: u16,
         /// Preset name
         #[arg(long)]
@@ -361,25 +561,25 @@ enum PresetCommands {
         #[arg(long)]
         include_bounds: bool,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Load a preset
     Load {
         /// Preset ID to load
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_presets))]
         id: u16,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Delete a preset
     Delete {
         /// Preset ID to delete
-        #[arg(long)]
+        #[arg(long, add = ArgValueCompleter::new(complete_presets))]
         id: u16,
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
 }
@@ -389,7 +589,7 @@ enum DebugCommands {
     /// Show device info (version, memory, uptime, WiFi signal, LED stats)
     Info {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Output raw JSON instead of formatted text
         #[arg(long)]
@@ -398,7 +598,7 @@ enum DebugCommands {
     /// Show live LED color values
     Live {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Output raw JSON instead of formatted text
         #[arg(long)]
@@ -407,19 +607,19 @@ enum DebugCommands {
     /// List available effects on the device
     Effects {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// List available color palettes on the device
     Palettes {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
     },
     /// Show combined state and info (full JSON dump)
     Dump {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Output file path (prints to stdout if not specified)
         #[arg(short, long)]
@@ -428,7 +628,7 @@ enum DebugCommands {
     /// Continuously watch device info stats
     Watch {
         /// Device name or IP (uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
         /// Polling interval in seconds (default: 2)
         #[arg(long, default_value = "2")]
@@ -477,6 +677,7 @@ fn diff_json(local: &serde_json::Value, device: &serde_json::Value, prefix: &str
 }
 
 fn main() {
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     if let Err(e) = run() {
         eprintln!("Error: {e}");
         std::process::exit(1);
@@ -859,6 +1060,7 @@ fn get_wled_release_by_tag(tag: &str) -> Result<serde_json::Value, Box<dyn std::
 fn find_firmware_asset(
     release: &serde_json::Value,
     platform: &str,
+    prefer_gz: bool,
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
     let assets = release["assets"]
         .as_array()
@@ -869,14 +1071,22 @@ fn find_firmware_asset(
         .unwrap_or("unknown")
         .trim_start_matches('v');
 
-    // Build candidate filenames to match against — prefer .bin.gz for space efficiency
     let platform_upper = platform.to_uppercase();
-    let candidates: Vec<String> = vec![
-        format!("WLED_{version}_{platform_upper}.bin.gz"),
-        format!("WLED_{version}_{platform}.bin.gz"),
-        format!("WLED_{version}_{platform_upper}.bin"),
-        format!("WLED_{version}_{platform}.bin"),
-    ];
+    let candidates: Vec<String> = if prefer_gz {
+        vec![
+            format!("WLED_{version}_{platform_upper}.bin.gz"),
+            format!("WLED_{version}_{platform}.bin.gz"),
+            format!("WLED_{version}_{platform_upper}.bin"),
+            format!("WLED_{version}_{platform}.bin"),
+        ]
+    } else {
+        vec![
+            format!("WLED_{version}_{platform_upper}.bin"),
+            format!("WLED_{version}_{platform}.bin"),
+            format!("WLED_{version}_{platform_upper}.bin.gz"),
+            format!("WLED_{version}_{platform}.bin.gz"),
+        ]
+    };
 
     // Try exact matches — iterate candidates first to preserve .bin.gz preference
     for candidate in &candidates {
@@ -931,24 +1141,101 @@ fn download_firmware(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(response.bytes()?.to_vec())
 }
 
-fn upload_firmware(ip: &str, firmware: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+/// Extract meaningful text from WLED HTML responses.
+fn extract_wled_message(html: &str) -> String {
+    // Remove script and style blocks entirely
+    let mut result = html.to_string();
+    for tag in &["script", "style"] {
+        while let Some(start) = result.find(&format!("<{tag}")) {
+            if let Some(end) = result[start..].find(&format!("</{tag}>")) {
+                result.replace_range(start..start + end + tag.len() + 3, "");
+            } else {
+                break;
+            }
+        }
+    }
+    // Convert block elements to newlines, strip remaining tags
+    let clean = result.replace("<br>", "\n").replace("</p>", "\n");
+    let mut inside_tag = false;
+    let stripped: String = clean
+        .chars()
+        .filter(|c| {
+            if *c == '<' {
+                inside_tag = true;
+                false
+            } else if *c == '>' {
+                inside_tag = false;
+                false
+            } else {
+                !inside_tag
+            }
+        })
+        .collect();
+    // Collapse whitespace and return non-empty lines
+    stripped
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+struct UploadError {
+    message: String,
+    not_enough_space: bool,
+}
+
+impl std::fmt::Display for UploadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+fn upload_firmware(ip: &str, firmware: Vec<u8>, skip_validation: bool) -> Result<(), UploadError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
-        .build()?;
+        .build()
+        .map_err(|e| UploadError {
+            message: e.to_string(),
+            not_enough_space: false,
+        })?;
 
     let part = reqwest::blocking::multipart::Part::bytes(firmware)
         .file_name("firmware.bin")
-        .mime_str("application/octet-stream")?;
+        .mime_str("application/octet-stream")
+        .map_err(|e| UploadError {
+            message: e.to_string(),
+            not_enough_space: false,
+        })?;
 
-    let form = reqwest::blocking::multipart::Form::new().part("update", part);
+    let mut form = reqwest::blocking::multipart::Form::new().part("update", part);
+    if skip_validation {
+        form = form.text("skipValidation", "1");
+    }
 
     let response = client
         .post(format!("http://{ip}/update"))
         .multipart(form)
-        .send()?;
+        .send()
+        .map_err(|e| UploadError {
+            message: format!("Firmware upload failed: {e}"),
+            not_enough_space: false,
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!("Firmware upload failed (HTTP {})", response.status()).into());
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        let message = extract_wled_message(&body);
+        let not_enough_space = message.to_lowercase().contains("not enough space");
+        let detail = if message.is_empty() {
+            String::new()
+        } else {
+            format!("\nDevice response: {message}")
+        };
+        return Err(UploadError {
+            message: format!("Firmware upload failed (HTTP {status}){detail}"),
+            not_enough_space,
+        });
     }
 
     Ok(())
@@ -1413,6 +1700,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  Free heap:  {heap} bytes{warning}");
                     }
 
+                    // Fetch config once for WiFi PHY mode and LED type
+                    let device_cfg = get_device_config(&ip).ok();
+
                     // WiFi info
                     if let Some(wifi) = info.get("wifi") {
                         println!();
@@ -1431,15 +1721,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(bssid) = wifi["bssid"].as_str() {
                             println!("  BSSID:      {bssid}");
                         }
+                        if let Some(ref cfg) = device_cfg {
+                            let phy_mode = if cfg["wifi"]["phy"].as_bool().unwrap_or(false) {
+                                "802.11g"
+                            } else {
+                                "802.11n"
+                            };
+                            println!("  PHY mode:   {phy_mode}");
+                        }
                     }
 
                     // LED info
                     if let Some(leds) = info.get("leds") {
                         println!();
                         if let Some(count) = leds["count"].as_u64() {
-                            // Fetch LED type from config
-                            let led_type = get_device_config(&ip)
-                                .ok()
+                            let led_type = device_cfg
+                                .as_ref()
                                 .and_then(|cfg| {
                                     cfg["hw"]["led"]["ins"]
                                         .as_array()?
@@ -1688,6 +1985,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let ip = resolve_device_ip(device.as_deref())?;
 
+                // When unlocking a locked device, WLED requires the current OTA
+                // password in the request to verify the unlock is authorized.
+                if unlock && password.is_none() {
+                    let cfg = get_device_config(&ip)?;
+                    if cfg["ota"]["lock"].as_bool().unwrap_or(false) {
+                        return Err(
+                            "OTA is locked. Provide the current OTA password with --password to unlock.\n  \
+                             The default WLED OTA password is \"wledota\"."
+                                .into(),
+                        );
+                    }
+                }
+
                 let mut ota = json!({});
                 if lock {
                     ota["lock"] = json!(true);
@@ -1817,8 +2127,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             device,
             check,
             yes,
+            file,
+            skip_validation,
         } => {
             let ip = resolve_device_ip(device.as_deref())?;
+
+            // Direct file upload mode
+            if let Some(ref path) = file {
+                let firmware = std::fs::read(path)
+                    .map_err(|e| format!("Failed to read firmware file: {e}"))?;
+                println!("Uploading {} ({} bytes) to device at {ip}...", path, firmware.len());
+                if !yes {
+                    print!("Proceed? [y/N]: ");
+                    use std::io::Write;
+                    std::io::stdout().flush()?;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if input.trim() != "y" && input.trim() != "Y" {
+                        println!("Update aborted.");
+                        return Ok(());
+                    }
+                }
+                upload_firmware(&ip, firmware, skip_validation).map_err(|e| e.message)?;
+                println!("\nFirmware upload complete! Device will reboot automatically.");
+                return Ok(());
+            }
 
             // Get device info for current version and architecture
             println!("Querying device at {ip}...");
@@ -1863,9 +2196,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            // Find the right firmware binary — prefer .bin.gz over .bin
             let (asset_name, download_url) =
-                find_firmware_asset(&gh_release, &target_platform)?;
+                find_firmware_asset(&gh_release, &target_platform, false)?;
             println!("  Firmware binary:  {asset_name}");
 
             if check {
@@ -1893,17 +2225,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Download firmware
-            println!("\nDownloading {asset_name}...");
-            let firmware = download_firmware(&download_url)?;
-            println!(
-                "  Downloaded {} bytes",
-                firmware.len()
-            );
+            // Check if OTA is locked before downloading
+            let device_cfg = get_device_config(&ip)?;
+            if device_cfg["ota"]["lock"].as_bool().unwrap_or(false) {
+                return Err(
+                    "OTA is locked on this device. Unlock it first with:\n  \
+                     wld config ota --unlock --password <ota-password>\n  \
+                     The default WLED OTA password is \"wledota\"."
+                        .into(),
+                );
+            }
 
-            // Upload firmware to device
-            println!("Uploading firmware to device at {ip}...");
-            upload_firmware(&ip, firmware)?;
+            // Download and upload firmware, retrying with .bin.gz if not enough space
+            let mut current_asset = asset_name;
+            let mut current_url = download_url;
+            loop {
+                println!("\nDownloading {current_asset}...");
+                let firmware = download_firmware(&current_url)?;
+                println!("  Downloaded {} bytes", firmware.len());
+
+                println!("Uploading firmware to device at {ip}...");
+                match upload_firmware(&ip, firmware, skip_validation) {
+                    Ok(()) => break,
+                    Err(e) if e.not_enough_space && !current_asset.ends_with(".bin.gz") => {
+                        println!("  Not enough space — retrying with compressed firmware...");
+                        let (gz_name, gz_url) =
+                            find_firmware_asset(&gh_release, &target_platform, true)?;
+                        if gz_name == current_asset {
+                            return Err(e.message.into());
+                        }
+                        current_asset = gz_name;
+                        current_url = gz_url;
+                    }
+                    Err(e) => return Err(e.message.into()),
+                }
+            }
             println!(
                 "\nFirmware update complete! Device is updating from {current_ver} to {release_ver}."
             );
