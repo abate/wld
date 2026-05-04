@@ -153,6 +153,19 @@ enum Commands {
         #[command(subcommand)]
         subcommand: DebugCommands,
     },
+    /// Update device firmware from GitHub releases
+    Update {
+        /// Target version (e.g. "0.15.0" or "v0.15.0"). Defaults to latest release.
+        #[arg(long)]
+        version: Option<String>,
+        /// Platform override (e.g. ESP8266, ESP32, ESP32-S3, ESP32-C3-QIO, ESP01, ESP02).
+        /// Auto-detected from device if not specified.
+        #[arg(long)]
+        platform: Option<String>,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -622,6 +635,163 @@ pub fn get_device_live(ip: &str) -> Result<serde_json::Value, Box<dyn std::error
 
     let text = response.text()?;
     Ok(serde_json::from_str(&text)?)
+}
+
+fn github_client() -> Result<reqwest::blocking::Client, Box<dyn std::error::Error>> {
+    Ok(reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .user_agent("wld-cli")
+        .build()?)
+}
+
+fn get_latest_wled_release() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = github_client()?;
+    let response = client
+        .get("https://api.github.com/repos/wled/WLED/releases/latest")
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch latest release from GitHub (HTTP {})",
+            response.status()
+        )
+        .into());
+    }
+
+    Ok(serde_json::from_str(&response.text()?)?)
+}
+
+fn get_wled_release_by_tag(tag: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = github_client()?;
+
+    // Try with "v" prefix first, then without
+    let tags_to_try = if tag.starts_with('v') {
+        vec![tag.to_string(), tag[1..].to_string()]
+    } else {
+        vec![format!("v{tag}"), tag.to_string()]
+    };
+
+    for t in &tags_to_try {
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/wled/WLED/releases/tags/{t}"
+            ))
+            .send()?;
+
+        if response.status().is_success() {
+            return Ok(serde_json::from_str(&response.text()?)?);
+        }
+    }
+
+    Err(format!("Release '{tag}' not found on GitHub").into())
+}
+
+fn find_firmware_asset(
+    release: &serde_json::Value,
+    platform: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let assets = release["assets"]
+        .as_array()
+        .ok_or("No assets found in release")?;
+
+    let version = release["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .trim_start_matches('v');
+
+    // Build candidate filenames to match against
+    let platform_upper = platform.to_uppercase();
+    let candidates: Vec<String> = vec![
+        format!("WLED_{version}_{platform_upper}.bin"),
+        format!("WLED_{version}_{platform_upper}.bin.gz"),
+        format!("WLED_{version}_{platform}.bin"),
+        format!("WLED_{version}_{platform}.bin.gz"),
+    ];
+
+    // Try exact matches first
+    for asset in assets {
+        let name = asset["name"].as_str().unwrap_or("");
+        for candidate in &candidates {
+            if name == candidate {
+                let url = asset["browser_download_url"]
+                    .as_str()
+                    .ok_or("Asset missing download URL")?;
+                return Ok((name.to_string(), url.to_string()));
+            }
+        }
+    }
+
+    // Try substring match on platform
+    for asset in assets {
+        let name = asset["name"].as_str().unwrap_or("");
+        if name.ends_with(".bin")
+            && name
+                .to_uppercase()
+                .contains(&platform_upper)
+        {
+            let url = asset["browser_download_url"]
+                .as_str()
+                .ok_or("Asset missing download URL")?;
+            return Ok((name.to_string(), url.to_string()));
+        }
+    }
+
+    // List available assets for the error message
+    let available: Vec<&str> = assets
+        .iter()
+        .filter_map(|a| a["name"].as_str())
+        .filter(|n| n.ends_with(".bin") || n.ends_with(".bin.gz"))
+        .collect();
+
+    Err(format!(
+        "No firmware binary found for platform '{platform}'. Available binaries:\n  {}",
+        available.join("\n  ")
+    )
+    .into())
+}
+
+fn download_firmware(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let client = github_client()?;
+    let response = client.get(url).send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Failed to download firmware (HTTP {})", response.status()).into());
+    }
+
+    Ok(response.bytes()?.to_vec())
+}
+
+fn upload_firmware(ip: &str, firmware: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+
+    let part = reqwest::blocking::multipart::Part::bytes(firmware)
+        .file_name("firmware.bin")
+        .mime_str("application/octet-stream")?;
+
+    let form = reqwest::blocking::multipart::Form::new().part("update", part);
+
+    let response = client
+        .post(format!("http://{ip}/update"))
+        .multipart(form)
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Firmware upload failed (HTTP {})", response.status()).into());
+    }
+
+    Ok(())
+}
+
+fn arch_to_default_platform(arch: &str) -> &str {
+    match arch.to_lowercase().as_str() {
+        "esp8266" => "ESP8266",
+        "esp32" => "ESP32",
+        "esp32s3" | "esp32-s3" => "ESP32-S3",
+        "esp32c3" | "esp32-c3" => "ESP32-C3-QIO",
+        _ => arch,
+    }
 }
 
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -1337,6 +1507,78 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Commands::Update {
+            version,
+            platform,
+            device,
+        } => {
+            let ip = resolve_device_ip(device.as_deref())?;
+
+            // Get device info for current version and architecture
+            println!("Querying device at {ip}...");
+            let info = get_device_info(&ip)?;
+            let current_ver = info["ver"].as_str().unwrap_or("unknown");
+            let arch = info["arch"].as_str().unwrap_or("");
+
+            let target_platform = match &platform {
+                Some(p) => p.clone(),
+                None => {
+                    if arch.is_empty() {
+                        return Err(
+                            "Could not detect device platform. Use --platform to specify it."
+                                .into(),
+                        );
+                    }
+                    arch_to_default_platform(arch).to_string()
+                }
+            };
+
+            println!("  Current version: {current_ver}");
+            println!("  Platform:        {target_platform}");
+
+            // Fetch release info from GitHub
+            println!("\nFetching release info from GitHub...");
+            let release = match &version {
+                Some(v) => get_wled_release_by_tag(v)?,
+                None => get_latest_wled_release()?,
+            };
+
+            let tag = release["tag_name"].as_str().unwrap_or("unknown");
+            let release_ver = tag.trim_start_matches('v');
+            println!("  Target version:  {release_ver}");
+
+            if release_ver == current_ver {
+                println!("\nDevice is already running version {current_ver}. Nothing to do.");
+                return Ok(());
+            }
+
+            // Find the right firmware binary
+            let (asset_name, download_url) =
+                find_firmware_asset(&release, &target_platform)?;
+            println!("  Firmware binary:  {asset_name}");
+
+            if dry_run {
+                println!("\nWould download {asset_name} and upload to device at {ip}");
+                println!("  Upgrade: {current_ver} -> {release_ver}");
+                return Ok(());
+            }
+
+            // Download firmware
+            println!("\nDownloading {asset_name}...");
+            let firmware = download_firmware(&download_url)?;
+            println!(
+                "  Downloaded {} bytes",
+                firmware.len()
+            );
+
+            // Upload firmware to device
+            println!("Uploading firmware to device at {ip}...");
+            upload_firmware(&ip, firmware)?;
+            println!(
+                "\nFirmware update complete! Device is upgrading from {current_ver} to {release_ver}."
+            );
+            println!("The device will reboot automatically. This may take up to 30 seconds.");
+        }
     }
 
     Ok(())

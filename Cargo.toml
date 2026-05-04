@@ -17,7 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 directories = "5.0"
-reqwest = { version = "0.11", features = ["blocking"] }
+reqwest = { version = "0.11", features = ["blocking", "multipart"] }
 rmcp = { version = "0.6.0", features = ["server", "transport-io", "macros"], optional = true }
 tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "macros"], optional = true }
 tracing = { version = "0.1", optional = true }

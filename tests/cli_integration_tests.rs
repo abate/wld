@@ -882,6 +882,78 @@ fn test_debug_live_accepts_json_flag() {
     cleanup_temp_home(&temp_home);
 }
 
+// Update command tests
+
+#[test]
+fn test_update_help() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["update", "--help"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--version"));
+    assert!(stdout.contains("--platform"));
+    assert!(stdout.contains("--device"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_update_no_device() {
+    let temp_home = setup_temp_home();
+
+    let output = run_command_with_temp_home(&["update"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no default device") || stderr.contains("No device specified"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_update_accepts_version_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // Will fail to connect, but should parse args correctly
+    let output =
+        run_command_with_temp_home(&["update", "--version", "0.15.0"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_update_accepts_platform_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["update", "--platform", "ESP32"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_update() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // Dry-run will still fail to connect to the device for info, but
+    // should parse args correctly
+    let output = run_command_with_temp_home(
+        &["--dry-run", "update", "--version", "0.15.0"],
+        &temp_home,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
 // Config command tests
 
 #[test]
