@@ -6,14 +6,15 @@ Control [WLED](https://kno.wled.ge/) lights from the command line
 
 ## Features
 
+- **Device discovery** — auto-find WLED devices on the network via mDNS
 - **Device management** — save multiple WLED devices by name, set a default
-- **Power & brightness** — on/off/brightness with percentage support
+- **Power & brightness** — on/off/brightness/reboot with percentage support
 - **Segments** — create, modify, delete, export and import LED segments
 - **Presets** — save, load, delete device presets (IDs 1-250)
 - **Configuration** — WiFi, OTA, LED hardware settings; export/import full config as JSON
 - **Firmware updates** — OTA from GitHub releases or local files, auto-retry with compressed firmware
 - **Debug tools** — device info, live LED values, effects/palettes list, watch mode, JSON dump
-- **MCP server** — 17 tools for AI agent integration (Claude Desktop, etc.)
+- **MCP server** — 19 tools for AI agent integration (Claude Desktop, etc.)
 - **Shell completions** — dynamic completions for device names, segment IDs, and preset IDs
 - **IaC workflow** — example script for git-tracked device configuration management
 - **Dry-run mode** — preview any mutating command with `--dry-run`
@@ -58,8 +59,9 @@ Static completions are also available via `wld completions <shell>`.
 ### Device Management
 
 ```bash
-wld add bedroom 192.168.1.100    # Add a device (first becomes default)
-wld add kitchen 10.0.0.42
+wld discover                     # Find WLED devices on the network
+wld discover --add               # Find and auto-add new devices
+wld add bedroom 192.168.1.100   # Add a device manually
 wld ls                           # List all devices (* = default)
 wld set-default kitchen          # Change default device
 wld delete bedroom               # Remove a device
@@ -74,6 +76,8 @@ wld off -d 192.168.1.100         # Turn off by IP address
 wld brightness 128               # Set to ~50% (0-255)
 wld brightness 75 -p             # Set to 75% using percentage
 wld status                       # Check all devices (on/off/unreachable)
+wld reboot                       # Reboot default device
+wld reboot -d kitchen            # Reboot a specific device
 ```
 
 ### Segments
@@ -110,6 +114,7 @@ wld config wifi --ssid MyNetwork --password secret
 wld config wifi --mdns mydevice --phy-mode n  # Set mDNS hostname and WiFi PHY
 wld config ota --unlock --password wledota    # Unlock OTA updates
 wld config led --count 60 --led-type WS2812B  # Configure LED hardware
+wld config led --led-ma 35 --color-order GRB  # Per-LED mA and color order
 ```
 
 ### Firmware Updates
@@ -177,14 +182,16 @@ Add to your Claude Desktop MCP config:
 }
 ```
 
-### Available Tools (17)
+### Available Tools (19)
 
 | Tool | Description |
 |------|-------------|
+| `wled_discover` | Discover WLED devices on the network via mDNS |
 | `wled_devices` | List saved devices with names, IPs, and default |
 | `wled_on` | Turn device on |
 | `wled_off` | Turn device off |
 | `wled_brightness` | Set brightness (0-255) |
+| `wled_reboot` | Reboot a device |
 | `wled_status` | Check status of all devices |
 | `wled_segment_list` | List all segments |
 | `wled_segment_set` | Create or modify a segment |

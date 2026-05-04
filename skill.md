@@ -17,10 +17,15 @@ cargo install --path .
 | `--dry-run` | Preview what would happen without making any changes |
 | `-d, --device <name_or_ip>` | Target a specific device by saved name or direct IP address |
 
-## Device Management
+## Device Discovery & Management
 
 ```bash
-# Add a device (first device becomes default)
+# Discover WLED devices on the network via mDNS
+wld discover
+wld discover --timeout 10
+wld discover --add              # Auto-add discovered devices
+
+# Add a device manually (first device becomes default)
 wld add living_room 192.168.1.100
 
 # List all saved devices
@@ -49,6 +54,10 @@ wld brightness 128
 # Set brightness as a percentage (0-100)
 wld brightness 50 --percentage
 wld brightness 75 -p -d living_room
+
+# Reboot a device
+wld reboot
+wld reboot -d living_room
 ```
 
 ## Segment Management
@@ -131,6 +140,7 @@ wld config ota --password "newpassword"
 # Configure LED hardware
 wld config led --power 3000 --led-type WS2812B --count 144
 wld config led --led-type SK6812 --count 60 --pin 2
+wld config led --led-ma 35 --color-order GRB
 ```
 
 ## Debug & Inspection
@@ -249,10 +259,12 @@ wld mcp
 
 | Tool | Description |
 |------|-------------|
+| `wled_discover` | Discover WLED devices on the network via mDNS |
 | `wled_devices` | List all saved devices from config |
 | `wled_on` | Turn a device on |
 | `wled_off` | Turn a device off |
 | `wled_brightness` | Set brightness (0-255) |
+| `wled_reboot` | Reboot a device |
 | `wled_status` | Check status of all devices |
 | `wled_segment_list` | List all segments |
 | `wled_segment_set` | Create or update a segment (id, start, stop, color, effect, speed, intensity, palette, brightness, on) |

@@ -226,6 +226,23 @@ enum Commands {
         Shows all devices in ~/.wld.toml with their IP addresses. \
         The default device is marked with an asterisk (*).")]
     Ls,
+    /// Discover WLED devices on the local network via mDNS
+    #[command(long_about = "Discover WLED devices on the local network via mDNS.\n\n\
+        Sends an mDNS query for _wled._tcp services and lists all \
+        responding devices with their name, IP, and version.\n\n\
+        Examples:\n  \
+        wld discover                  Scan for 5 seconds\n  \
+        wld discover --timeout 10    Scan for 10 seconds\n  \
+        wld discover --add           Scan and add new devices\n  \
+        wld discover --add --timeout 3")]
+    Discover {
+        /// Scan duration in seconds
+        #[arg(long, default_value = "5")]
+        timeout: u64,
+        /// Automatically add discovered devices to config
+        #[arg(long)]
+        add: bool,
+    },
     /// Set the default device
     #[command(long_about = "Set the default device.\n\n\
         Commands that accept --device will use this device when no \
@@ -290,6 +307,18 @@ enum Commands {
         brightness, and current effect. The default device is marked \
         with an asterisk (*).")]
     Status,
+    /// Reboot device
+    #[command(long_about = "Reboot device.\n\n\
+        Sends a reboot command to the device. Useful after configuration \
+        changes that require a restart (e.g. mDNS hostname, WiFi settings).\n\n\
+        Examples:\n  \
+        wld reboot                    Reboot default device\n  \
+        wld reboot -d kitchen         Reboot a specific device")]
+    Reboot {
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
+        device: Option<String>,
+    },
     /// Configure device settings (WiFi, OTA, LEDs)
     #[command(name = "config", long_about = "Configure device settings.\n\n\
         Manage WiFi, OTA (firmware update), and LED hardware settings. \
@@ -1329,6 +1358,102 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {name} - {ip}{default_marker}");
             }
         }
+        Commands::Discover { timeout, add } => {
+            use mdns_sd::{ServiceDaemon, ServiceEvent};
+            use std::collections::BTreeMap;
+
+            println!("Scanning for WLED devices ({timeout}s)...");
+            let mdns = ServiceDaemon::new()
+                .map_err(|e| format!("Failed to start mDNS: {e}"))?;
+            let receiver = mdns
+                .browse("_wled._tcp.local.")
+                .map_err(|e| format!("Failed to browse mDNS: {e}"))?;
+
+            // Collect discovered devices: name -> (ip, info_text)
+            let mut found: BTreeMap<String, (String, String)> = BTreeMap::new();
+            let start = std::time::Instant::now();
+            let duration = Duration::from_secs(timeout);
+
+            loop {
+                let remaining = duration.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                match receiver.recv_timeout(remaining) {
+                    Ok(ServiceEvent::ServiceResolved(info)) => {
+                        let ip = info
+                            .get_addresses_v4()
+                            .iter()
+                            .next()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default();
+                        if ip.is_empty() {
+                            continue;
+                        }
+
+                        // Extract device name from mDNS instance name
+                        // fullname is like "WLED-Stairs._wled._tcp.local."
+                        let device_name = info
+                            .get_fullname()
+                            .split("._wled._tcp")
+                            .next()
+                            .unwrap_or("unknown")
+                            .to_lowercase()
+                            .replace(' ', "-");
+
+                        // Try to get version from device
+                        let version = get_device_info(&ip)
+                            .ok()
+                            .and_then(|i| i["ver"].as_str().map(String::from))
+                            .unwrap_or_else(|| "?".into());
+
+                        println!("  Found: {device_name} at {ip} (WLED {version})");
+                        found.insert(device_name, (ip, version));
+                    }
+                    Ok(_) => {} // Ignore other events
+                    Err(_) => break,
+                }
+            }
+
+            let _ = mdns.shutdown();
+
+            if found.is_empty() {
+                println!("\nNo WLED devices found on the network.");
+                return Ok(());
+            }
+
+            println!("\nDiscovered {} device(s):", found.len());
+            let config = Config::load().unwrap_or_else(|_| Config {
+                devices: std::collections::HashMap::new(),
+                default_device: None,
+            });
+            let mut added = 0;
+
+            for (name, (ip, version)) in &found {
+                let already_saved = config.devices.values().any(|v| v == ip);
+                let status = if already_saved { " (already saved)" } else { "" };
+                println!("  {name} — {ip} (WLED {version}){status}");
+
+                if add && !already_saved {
+                    if dry_run {
+                        println!("    Would add as '{name}'");
+                    } else {
+                        let mut cfg = Config::load().unwrap_or_else(|_| Config {
+                            devices: std::collections::HashMap::new(),
+                            default_device: None,
+                        });
+                        cfg.add_device(name.clone(), ip.clone());
+                        cfg.save()?;
+                        println!("    Added as '{name}'");
+                        added += 1;
+                    }
+                }
+            }
+
+            if add && !dry_run && added > 0 {
+                println!("\nAdded {added} new device(s).");
+            }
+        }
         Commands::SetDefault { name } => {
             if dry_run {
                 let config = Config::load()?;
@@ -1423,6 +1548,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !all_reachable {
                 std::process::exit(1);
             }
+        }
+        Commands::Reboot { device } => {
+            let ip = resolve_device_ip(device.as_deref())?;
+            if dry_run {
+                println!("Would reboot device at {ip}");
+                return Ok(());
+            }
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()?;
+            client
+                .get(format!("http://{ip}/reset"))
+                .send()
+                .map_err(|e| format!("Failed to reboot device: {e}"))?;
+            println!("Reboot command sent to device at {ip}");
         }
         Commands::Segment { subcommand } => match subcommand {
             SegmentCommands::List { device } => {

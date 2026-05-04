@@ -723,6 +723,123 @@ impl WledMcpServer {
         }
     }
 
+    #[tool(description = "Discover WLED devices on the local network via mDNS. Returns device names, IPs, and firmware versions.")]
+    async fn wled_discover(
+        &self,
+        Parameters(_params): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::task::spawn_blocking(|| -> Result<String, String> {
+                use mdns_sd::{ServiceDaemon, ServiceEvent};
+                use std::collections::BTreeMap;
+
+                let mdns = ServiceDaemon::new().map_err(|e| format!("Failed to start mDNS: {e}"))?;
+                let receiver = mdns
+                    .browse("_wled._tcp.local.")
+                    .map_err(|e| format!("Failed to browse mDNS: {e}"))?;
+
+                let mut found: BTreeMap<String, (String, String)> = BTreeMap::new();
+                let start = std::time::Instant::now();
+                let duration = std::time::Duration::from_secs(5);
+
+                loop {
+                    let remaining = duration.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match receiver.recv_timeout(remaining) {
+                        Ok(ServiceEvent::ServiceResolved(info)) => {
+                            let ip = info
+                                .get_addresses_v4()
+                                .iter()
+                                .next()
+                                .map(|a| a.to_string())
+                                .unwrap_or_default();
+                            if ip.is_empty() {
+                                continue;
+                            }
+                            let device_name = info
+                                .get_fullname()
+                                .split("._wled._tcp")
+                                .next()
+                                .unwrap_or("unknown")
+                                .to_lowercase()
+                                .replace(' ', "-");
+                            let version = crate::get_device_info(&ip)
+                                .ok()
+                                .and_then(|i| i["ver"].as_str().map(String::from))
+                                .unwrap_or_else(|| "?".into());
+                            found.insert(device_name, (ip, version));
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+
+                let _ = mdns.shutdown();
+
+                if found.is_empty() {
+                    return Ok("No WLED devices found on the network.".to_string());
+                }
+
+                let config = Config::load().ok();
+                let mut output = format!("Discovered {} WLED device(s):\n\n", found.len());
+                for (name, (ip, version)) in &found {
+                    let saved = config
+                        .as_ref()
+                        .map(|c| c.devices.values().any(|v| v == ip))
+                        .unwrap_or(false);
+                    let status = if saved { " (saved)" } else { "" };
+                    output.push_str(&format!("  {name} — {ip} (WLED {version}){status}\n"));
+                }
+                Ok(output)
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(output))) => Ok(CallToolResult::success(vec![Content::text(output)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out during network scan",
+            )])),
+        }
+    }
+
+    #[tool(description = "Reboot a WLED device. Useful after configuration changes that require a restart.")]
+    async fn wled_reboot(
+        &self,
+        Parameters(params): Parameters<WledDeviceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let device = params.device.clone();
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
+                let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                client
+                    .get(format!("http://{ip}/reset"))
+                    .send()
+                    .map_err(|e| format!("Failed to reboot device: {e}"))?;
+                Ok(format!("Reboot command sent to device at {ip}"))
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(msg))) => Ok(CallToolResult::success(vec![Content::text(msg)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!("Task error: {e}"))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
+        }
+    }
+
     #[tool(description = "Check status of all configured WLED devices")]
     async fn wled_status(
         &self,

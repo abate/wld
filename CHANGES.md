@@ -4,6 +4,10 @@
 
 ### New Commands
 
+- **`wld discover`** — find WLED devices on the local network via mDNS
+  - `--add` to auto-save discovered devices
+  - `--timeout` to control scan duration (default: 5s)
+- **`wld reboot`** — reboot a device (useful after config changes requiring restart)
 - **`wld segment`** — manage LED segments (list, set, delete, export, import)
 - **`wld preset`** — manage presets (list, save, load, delete)
 - **`wld config`** — configure device settings
@@ -11,7 +15,7 @@
   - `diff` — compare local config file against live device
   - `wifi` — SSID, password, mDNS hostname, PHY mode (g/n)
   - `ota` — lock/unlock OTA updates (unlock requires `--password` when locked)
-  - `led` — LED count, type, pin, color order
+  - `led` — LED count, type, pin, color order, per-LED mA, power budget
 - **`wld debug`** — inspect device state
   - `info` — version, WiFi signal, memory, LED type, PHY mode, uptime
   - `live` — real-time LED RGB values via WebSocket
@@ -40,8 +44,9 @@
 
 ### MCP Server
 
-Expanded from 5 to 17 tools:
+Expanded from 5 to 19 tools:
 
+- `wled_discover`, `wled_reboot`
 - `wled_segment_list`, `wled_segment_set`, `wled_segment_delete`
 - `wled_preset_list`, `wled_preset_save`, `wled_preset_load`, `wled_preset_delete`
 - `wled_debug_info`, `wled_debug_effects`, `wled_debug_palettes`
