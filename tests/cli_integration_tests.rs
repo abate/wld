@@ -1180,6 +1180,34 @@ fn test_debug_watch_accepts_interval() {
 }
 
 #[test]
+fn test_update_check_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // --check is a valid flag; will fail on network but should parse args
+    let output = run_command_with_temp_home(&["update", "--check"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+    assert!(!stderr.contains("error: unknown argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_update_yes_flag() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    // --yes is a valid flag; will fail on network but should parse args
+    let output = run_command_with_temp_home(&["update", "--yes"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("error: unexpected argument"));
+    assert!(!stderr.contains("error: unknown argument"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
 fn test_dry_run_segment_import() {
     let temp_home = setup_temp_home();
     run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);

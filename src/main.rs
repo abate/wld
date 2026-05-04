@@ -165,6 +165,12 @@ enum Commands {
         /// Device name or IP (uses default if not specified)
         #[arg(short, long)]
         device: Option<String>,
+        /// Only show version comparison and available firmware without downloading
+        #[arg(long)]
+        check: bool,
+        /// Skip confirmation prompt before downloading and uploading firmware
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
@@ -780,13 +786,13 @@ fn find_firmware_asset(
         .unwrap_or("unknown")
         .trim_start_matches('v');
 
-    // Build candidate filenames to match against
+    // Build candidate filenames to match against — prefer .bin.gz for space efficiency
     let platform_upper = platform.to_uppercase();
     let candidates: Vec<String> = vec![
-        format!("WLED_{version}_{platform_upper}.bin"),
         format!("WLED_{version}_{platform_upper}.bin.gz"),
-        format!("WLED_{version}_{platform}.bin"),
         format!("WLED_{version}_{platform}.bin.gz"),
+        format!("WLED_{version}_{platform_upper}.bin"),
+        format!("WLED_{version}_{platform}.bin"),
     ];
 
     // Try exact matches first
@@ -1665,6 +1671,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             version,
             platform,
             device,
+            check,
+            yes,
         } => {
             let ip = resolve_device_ip(device.as_deref())?;
 
@@ -1697,12 +1705,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             // Fetch release info from GitHub
             println!("\nFetching release info from GitHub...");
-            let release = match &version {
+            let gh_release = match &version {
                 Some(v) => get_wled_release_by_tag(v)?,
                 None => get_latest_wled_release()?,
             };
 
-            let tag = release["tag_name"].as_str().unwrap_or("unknown");
+            let tag = gh_release["tag_name"].as_str().unwrap_or("unknown");
             let release_ver = tag.trim_start_matches('v');
             println!("  Target version:  {release_ver}");
 
@@ -1711,15 +1719,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            // Find the right firmware binary
+            // Find the right firmware binary — prefer .bin.gz over .bin
             let (asset_name, download_url) =
-                find_firmware_asset(&release, &target_platform)?;
+                find_firmware_asset(&gh_release, &target_platform)?;
             println!("  Firmware binary:  {asset_name}");
+
+            if check {
+                println!("\nRun without --check to download and install the firmware.");
+                return Ok(());
+            }
 
             if dry_run {
                 println!("\nWould download {asset_name} and upload to device at {ip}");
                 println!("  {current_ver} -> {release_ver}");
                 return Ok(());
+            }
+
+            // Prompt for confirmation unless --yes was given
+            if !yes {
+                print!("Proceed with update? [y/N]: ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                let trimmed = input.trim();
+                if trimmed != "y" && trimmed != "Y" {
+                    println!("Update aborted.");
+                    return Ok(());
+                }
             }
 
             // Download firmware
