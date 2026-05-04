@@ -4,9 +4,29 @@ mod config;
 mod mcp;
 
 use clap::{Parser, Subcommand};
-use config::Config;
+use config::{validate_device_address, Config};
 use wled_json_api_library::structures::state::State;
 use wled_json_api_library::wled::Wled;
+
+fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if name.is_empty() {
+        return Err("Device name cannot be empty".into());
+    }
+    if name.len() > 64 {
+        return Err("Device name cannot exceed 64 characters".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "Device name '{name}' contains invalid characters. \
+             Use only letters, numbers, hyphens, and underscores"
+        )
+        .into());
+    }
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(name = "wld")]
@@ -180,6 +200,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Add { name, ip } => {
+            validate_device_name(&name)?;
+            validate_device_address(&ip)?;
             let mut config = Config::load()?;
             config.add_device(name.clone(), ip.clone());
             config.save()?;

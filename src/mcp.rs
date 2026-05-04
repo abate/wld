@@ -6,8 +6,12 @@ use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
 };
 
+use std::time::Duration;
+
 use crate::config::Config;
 use crate::{get_device_status, set_device_brightness, set_device_power, DeviceStatus};
+
+const DEVICE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct EmptyParams {}
@@ -77,18 +81,24 @@ impl WledMcpServer {
         Parameters(params): Parameters<WledDeviceParams>,
     ) -> Result<CallToolResult, McpError> {
         let device = params.device.clone();
-        match tokio::task::spawn_blocking(move || {
-            set_device_power(device.as_deref(), true).map_err(|e| e.to_string())
-        })
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                set_device_power(device.as_deref(), true).map_err(|e| e.to_string())
+            }),
+        )
         .await
         {
-            Ok(Ok(())) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(Ok(Ok(()))) => Ok(CallToolResult::success(vec![Content::text(
                 "Device turned on successfully",
             )])),
-            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Task error: {e}"
             ))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
         }
     }
 
@@ -100,18 +110,24 @@ impl WledMcpServer {
         Parameters(params): Parameters<WledDeviceParams>,
     ) -> Result<CallToolResult, McpError> {
         let device = params.device.clone();
-        match tokio::task::spawn_blocking(move || {
-            set_device_power(device.as_deref(), false).map_err(|e| e.to_string())
-        })
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                set_device_power(device.as_deref(), false).map_err(|e| e.to_string())
+            }),
+        )
         .await
         {
-            Ok(Ok(())) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(Ok(Ok(()))) => Ok(CallToolResult::success(vec![Content::text(
                 "Device turned off successfully",
             )])),
-            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Task error: {e}"
             ))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
         }
     }
 
@@ -124,18 +140,24 @@ impl WledMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let device = params.device.clone();
         let value = params.value;
-        match tokio::task::spawn_blocking(move || {
-            set_device_brightness(device.as_deref(), value).map_err(|e| e.to_string())
-        })
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                set_device_brightness(device.as_deref(), value).map_err(|e| e.to_string())
+            }),
+        )
         .await
         {
-            Ok(Ok(())) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(Ok(Ok(()))) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Device brightness set to {value} successfully"
             ))])),
-            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Task error: {e}"
             ))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
         }
     }
 
@@ -144,52 +166,58 @@ impl WledMcpServer {
         &self,
         Parameters(_params): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
-        match tokio::task::spawn_blocking(|| -> Result<String, String> {
-            let config = Config::load().map_err(|e| e.to_string())?;
+        match tokio::time::timeout(
+            DEVICE_TIMEOUT,
+            tokio::task::spawn_blocking(|| -> Result<String, String> {
+                let config = Config::load().map_err(|e| e.to_string())?;
 
-            if config.devices.is_empty() {
-                return Ok("No devices saved".to_string());
-            }
+                if config.devices.is_empty() {
+                    return Ok("No devices saved".to_string());
+                }
 
-            let mut output = String::from("Checking status of all devices:\n\n");
-            let mut all_reachable = true;
+                let mut output = String::from("Checking status of all devices:\n\n");
+                let mut all_reachable = true;
 
-            for (name, ip) in &config.devices {
-                let default_marker = if config.default_device.as_ref() == Some(name) {
-                    " (default)"
-                } else {
-                    ""
-                };
+                for (name, ip) in &config.devices {
+                    let default_marker = if config.default_device.as_ref() == Some(name) {
+                        " (default)"
+                    } else {
+                        ""
+                    };
 
-                output.push_str(&format!("  {name} ({ip}){default_marker}: "));
+                    output.push_str(&format!("  {name} ({ip}){default_marker}: "));
 
-                match get_device_status(ip) {
-                    DeviceStatus::On => {
-                        output.push_str("ON\n");
-                    }
-                    DeviceStatus::Off => {
-                        output.push_str("OFF\n");
-                    }
-                    DeviceStatus::Unreachable => {
-                        output.push_str("UNREACHABLE\n");
-                        all_reachable = false;
+                    match get_device_status(ip) {
+                        DeviceStatus::On => {
+                            output.push_str("ON\n");
+                        }
+                        DeviceStatus::Off => {
+                            output.push_str("OFF\n");
+                        }
+                        DeviceStatus::Unreachable => {
+                            output.push_str("UNREACHABLE\n");
+                            all_reachable = false;
+                        }
                     }
                 }
-            }
 
-            if !all_reachable {
-                output.push_str("\nWarning: Some devices are unreachable");
-            }
+                if !all_reachable {
+                    output.push_str("\nWarning: Some devices are unreachable");
+                }
 
-            Ok(output)
-        })
+                Ok(output)
+            }),
+        )
         .await
         {
-            Ok(Ok(output)) => Ok(CallToolResult::success(vec![Content::text(output)])),
-            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(e)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(Ok(Ok(output))) => Ok(CallToolResult::success(vec![Content::text(output)])),
+            Ok(Ok(Err(e))) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Ok(Err(e)) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Task error: {e}"
             ))])),
+            Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                "Operation timed out while communicating with device",
+            )])),
         }
     }
 }

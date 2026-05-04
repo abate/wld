@@ -64,8 +64,8 @@ fn send_mcp_request_via_script(temp_home: &Path, requests: Vec<&str>) -> Result<
 export HOME={}
 {{
 {}
-  sleep 12
-}} | timeout 20 {} mcp 2>/dev/null
+  sleep 20
+}} | timeout 35 {} mcp 2>/dev/null
 "#,
         temp_home.display(),
         requests

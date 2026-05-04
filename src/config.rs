@@ -4,6 +4,31 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// Validates that a device address is a safe IP address or hostname.
+/// Rejects URLs, auth components, and path-like strings to prevent SSRF.
+pub fn validate_device_address(address: &str) -> Result<(), String> {
+    if address.is_empty() {
+        return Err("Device address cannot be empty".to_string());
+    }
+
+    if address.contains("://") {
+        return Err(
+            "Device address should not contain a URL scheme. Provide an IP address or hostname only"
+                .to_string(),
+        );
+    }
+
+    for c in ['@', '/', '?', '#'] {
+        if address.contains(c) {
+            return Err(format!(
+                "Device address contains invalid character '{c}'. Provide an IP address or hostname only"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub devices: HashMap<String, String>, // name -> ip mapping
@@ -40,6 +65,13 @@ impl Config {
 
         let content = toml::to_string_pretty(&self)?;
         fs::write(&config_path, content)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+        }
+
         Ok(())
     }
 
@@ -94,6 +126,7 @@ impl Config {
                 return Ok(ip.clone());
             }
             // Otherwise treat it as an IP address
+            validate_device_address(identifier)?;
             return Ok(identifier.to_string());
         }
 
@@ -302,5 +335,36 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.devices.len(), 1);
         assert_eq!(deserialized.default_device, Some("test_device".to_string()));
+    }
+
+    #[test]
+    fn test_validate_device_address_valid() {
+        assert!(validate_device_address("192.168.1.100").is_ok());
+        assert!(validate_device_address("10.0.0.1").is_ok());
+        assert!(validate_device_address("my-wled.local").is_ok());
+        assert!(validate_device_address("192.168.1.100:80").is_ok());
+    }
+
+    #[test]
+    fn test_validate_device_address_rejects_urls() {
+        assert!(validate_device_address("http://192.168.1.100").is_err());
+        assert!(validate_device_address("https://evil.com").is_err());
+    }
+
+    #[test]
+    fn test_validate_device_address_rejects_ssrf() {
+        assert!(validate_device_address("user:pass@evil.com").is_err());
+        assert!(validate_device_address("192.168.1.1/admin").is_err());
+        assert!(validate_device_address("evil.com?redirect=true").is_err());
+        assert!(validate_device_address("evil.com#fragment").is_err());
+        assert!(validate_device_address("").is_err());
+    }
+
+    #[test]
+    fn test_get_device_ip_rejects_invalid_direct_ip() {
+        let config = Config::new();
+        assert!(config.get_device_ip(Some("http://evil.com")).is_err());
+        assert!(config.get_device_ip(Some("user@host")).is_err());
+        assert!(config.get_device_ip(Some("host/path")).is_err());
     }
 }
