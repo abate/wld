@@ -30,6 +30,27 @@ fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn led_type_to_code(led_type: &str) -> Result<u8, Box<dyn std::error::Error>> {
+    match led_type.to_uppercase().as_str() {
+        "WS2812B" | "WS2812" => Ok(22),
+        "WS2811" => Ok(16),
+        "SK6812" => Ok(30),
+        "TM1814" => Ok(24),
+        "WS2801" => Ok(50),
+        "APA102" => Ok(51),
+        "LPD8806" => Ok(52),
+        "P9813" => Ok(53),
+        _ => led_type.parse::<u8>().map_err(|_| {
+            format!(
+                "Unknown LED type '{led_type}'. \
+                 Supported: WS2812B, SK6812, TM1814, WS2801, APA102, LPD8806, P9813, \
+                 or a numeric code"
+            )
+            .into()
+        }),
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "wld")]
 #[command(about = "Control WLED lights from your terminal", long_about = None)]
@@ -90,6 +111,61 @@ enum Commands {
     },
     /// Check status of all configured devices
     Status,
+    /// Configure device settings (WiFi, OTA, LEDs)
+    #[command(name = "config")]
+    Configure {
+        #[command(subcommand)]
+        subcommand: ConfigureCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigureCommands {
+    /// Configure WiFi settings
+    Wifi {
+        /// WiFi network name (SSID)
+        #[arg(long)]
+        ssid: String,
+        /// WiFi password
+        #[arg(long)]
+        password: String,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Configure OTA (Over-The-Air) update settings
+    Ota {
+        /// Lock OTA updates to prevent firmware changes
+        #[arg(long, conflicts_with = "unlock")]
+        lock: bool,
+        /// Unlock OTA updates to allow firmware changes
+        #[arg(long, conflicts_with = "lock")]
+        unlock: bool,
+        /// Set OTA password
+        #[arg(long)]
+        password: Option<String>,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
+    /// Configure LED strip settings
+    Led {
+        /// Maximum power budget in milliamps (e.g. 850)
+        #[arg(long)]
+        power: Option<u32>,
+        /// LED strip type (WS2812B, SK6812, TM1814, WS2801, APA102, LPD8806, P9813, or numeric code)
+        #[arg(long, value_name = "TYPE")]
+        led_type: Option<String>,
+        /// Number of LEDs in the strip
+        #[arg(long)]
+        count: Option<u16>,
+        /// GPIO pin number for data line
+        #[arg(long)]
+        pin: Option<u8>,
+        /// Device name or IP (uses default if not specified)
+        #[arg(short, long)]
+        device: Option<String>,
+    },
 }
 
 fn main() {
@@ -198,6 +274,31 @@ pub fn get_device_status(ip: &str) -> DeviceStatus {
         }
         Err(_) => DeviceStatus::Unreachable,
     }
+}
+
+fn http_client() -> Result<reqwest::blocking::Client, Box<dyn std::error::Error>> {
+    Ok(reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?)
+}
+
+pub fn post_device_config(
+    ip: &str,
+    payload: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = http_client()?;
+    let body = serde_json::to_string(payload)?;
+    let response = client
+        .post(format!("http://{ip}/json/cfg"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("Device returned HTTP {}", response.status()).into());
+    }
+
+    Ok(())
 }
 
 fn resolve_device_ip(device: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -353,6 +454,147 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Commands::Configure { subcommand } => match subcommand {
+            ConfigureCommands::Wifi {
+                ssid,
+                password,
+                device,
+            } => {
+                let ip = resolve_device_ip(device.as_deref())?;
+                let payload = json!({
+                    "nw": {"ins": [{"ssid": ssid, "psk": password}]}
+                });
+
+                if dry_run {
+                    let display = json!({
+                        "nw": {"ins": [{"ssid": ssid, "psk": "***"}]}
+                    });
+                    println!("Would configure WiFi on device at {ip}:");
+                    println!("{}", serde_json::to_string_pretty(&display)?);
+                } else {
+                    post_device_config(&ip, &payload)?;
+                    println!("WiFi configured on device at {ip}");
+                    println!("Note: Device may restart to apply WiFi changes");
+                }
+            }
+            ConfigureCommands::Ota {
+                lock,
+                unlock,
+                password,
+                device,
+            } => {
+                if !lock && !unlock && password.is_none() {
+                    return Err(
+                        "At least one option required: --lock, --unlock, or --password".into(),
+                    );
+                }
+                let ip = resolve_device_ip(device.as_deref())?;
+
+                let mut ota = json!({});
+                if lock {
+                    ota["lock"] = json!(true);
+                }
+                if unlock {
+                    ota["lock"] = json!(false);
+                }
+                if let Some(ref psk) = password {
+                    ota["psk"] = json!(psk);
+                }
+                let payload = json!({"ota": ota});
+
+                if dry_run {
+                    let mut display_ota = ota.clone();
+                    if password.is_some() {
+                        display_ota["psk"] = json!("***");
+                    }
+                    println!("Would configure OTA on device at {ip}:");
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({"ota": display_ota}))?
+                    );
+                } else {
+                    post_device_config(&ip, &payload)?;
+                    let mut actions = Vec::new();
+                    if lock {
+                        actions.push("locked");
+                    }
+                    if unlock {
+                        actions.push("unlocked");
+                    }
+                    if password.is_some() {
+                        actions.push("password updated");
+                    }
+                    println!(
+                        "OTA settings updated on device at {ip}: {}",
+                        actions.join(", ")
+                    );
+                }
+            }
+            ConfigureCommands::Led {
+                power,
+                led_type,
+                count,
+                pin,
+                device,
+            } => {
+                if power.is_none() && led_type.is_none() && count.is_none() && pin.is_none() {
+                    return Err(
+                        "At least one option required: --power, --led-type, --count, or --pin"
+                            .into(),
+                    );
+                }
+
+                let type_code = led_type
+                    .as_ref()
+                    .map(|t| led_type_to_code(t))
+                    .transpose()?;
+                let ip = resolve_device_ip(device.as_deref())?;
+
+                let mut led_config = json!({});
+                if let Some(p) = power {
+                    led_config["maxpwr"] = json!(p);
+                }
+                if type_code.is_some() || count.is_some() || pin.is_some() {
+                    let mut instance = json!({});
+                    if let Some(code) = type_code {
+                        instance["type"] = json!(code);
+                    }
+                    if let Some(c) = count {
+                        instance["len"] = json!(c);
+                    }
+                    if let Some(p) = pin {
+                        instance["pin"] = json!([p]);
+                    }
+                    led_config["ins"] = json!([instance]);
+                }
+
+                let payload = json!({"hw": {"led": led_config}});
+
+                if dry_run {
+                    println!("Would configure LEDs on device at {ip}:");
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    post_device_config(&ip, &payload)?;
+                    let mut changes = Vec::new();
+                    if power.is_some() {
+                        changes.push("power budget");
+                    }
+                    if led_type.is_some() {
+                        changes.push("LED type");
+                    }
+                    if count.is_some() {
+                        changes.push("LED count");
+                    }
+                    if pin.is_some() {
+                        changes.push("GPIO pin");
+                    }
+                    println!(
+                        "LED settings updated on device at {ip}: {}",
+                        changes.join(", ")
+                    );
+                }
+            }
+        },
     }
 
     Ok(())

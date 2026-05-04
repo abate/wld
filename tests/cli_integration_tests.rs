@@ -508,3 +508,165 @@ fn test_dry_run_delete_does_not_persist() {
 
     cleanup_temp_home(&temp_home);
 }
+
+// Config command tests
+
+#[test]
+fn test_config_wifi_requires_ssid_and_password() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["config", "wifi"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_ota_requires_at_least_one_option() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["config", "ota"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("At least one option required"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_ota_lock_unlock_conflict() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["config", "ota", "--lock", "--unlock"], &temp_home);
+    assert!(!output.status.success());
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_led_requires_at_least_one_option() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(&["config", "led"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("At least one option required"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_led_invalid_type() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["config", "led", "--led-type", "INVALID"], &temp_home);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unknown LED type"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_config_led_accepts_numeric_type() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["config", "led", "--led-type", "22"], &temp_home);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("Unknown LED type"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_config_wifi() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run", "config", "wifi", "--ssid", "MyNetwork", "--password", "secret123",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would configure WiFi"));
+    assert!(stdout.contains("MyNetwork"));
+    assert!(stdout.contains("***"));
+    assert!(!stdout.contains("secret123"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_config_ota_lock() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output =
+        run_command_with_temp_home(&["--dry-run", "config", "ota", "--lock"], &temp_home);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would configure OTA"));
+    assert!(stdout.contains("true"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_config_led() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "config",
+            "led",
+            "--power",
+            "5000",
+            "--led-type",
+            "WS2812B",
+            "--count",
+            "144",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would configure LEDs"));
+    assert!(stdout.contains("5000"));
+    assert!(stdout.contains("144"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
+fn test_dry_run_config_wifi_with_specific_device() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "device1", "192.168.1.100"], &temp_home);
+    run_command_with_temp_home(&["add", "device2", "192.168.1.101"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run", "config", "wifi", "--ssid", "Test", "--password", "pass", "-d",
+            "device2",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("192.168.1.101"));
+
+    cleanup_temp_home(&temp_home);
+}
