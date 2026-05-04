@@ -97,6 +97,20 @@ fn complete_presets(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
         .unwrap_or_default()
 }
 
+fn parse_color_order(s: &str) -> Result<u8, String> {
+    match s.to_uppercase().as_str() {
+        "GRB" => Ok(0),
+        "RGB" => Ok(1),
+        "BRG" => Ok(2),
+        "RBG" => Ok(3),
+        "BGR" => Ok(4),
+        "GBR" => Ok(5),
+        _ => Err(format!(
+            "Unknown color order '{s}'. Valid options: GRB, RGB, BRG, RBG, BGR, GBR"
+        )),
+    }
+}
+
 fn validate_device_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     if name.is_empty() {
         return Err("Device name cannot be empty".into());
@@ -437,9 +451,15 @@ enum ConfigureCommands {
         /// Maximum power budget in milliamps (e.g. 850)
         #[arg(long)]
         power: Option<u32>,
+        /// Per-LED current draw in milliamps (default: 55 for WS2812B). Lower values allow higher brightness before power-capping.
+        #[arg(long)]
+        led_ma: Option<u16>,
         /// LED strip type (WS2812B, SK6812, TM1814, WS2801, APA102, LPD8806, P9813, or numeric code)
         #[arg(long, value_name = "TYPE")]
         led_type: Option<String>,
+        /// Color order (GRB, RGB, BRG, RBG, BGR, GBR)
+        #[arg(long, value_parser = parse_color_order)]
+        color_order: Option<u8>,
         /// Number of LEDs in the strip
         #[arg(long)]
         count: Option<u16>,
@@ -2040,14 +2060,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             ConfigureCommands::Led {
                 power,
+                led_ma,
                 led_type,
+                color_order,
                 count,
                 pin,
                 device,
             } => {
-                if power.is_none() && led_type.is_none() && count.is_none() && pin.is_none() {
+                if power.is_none()
+                    && led_ma.is_none()
+                    && led_type.is_none()
+                    && color_order.is_none()
+                    && count.is_none()
+                    && pin.is_none()
+                {
                     return Err(
-                        "At least one option required: --power, --led-type, --count, or --pin"
+                        "At least one option required: --power, --led-ma, --led-type, --color-order, --count, or --pin"
                             .into(),
                     );
                 }
@@ -2062,7 +2090,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(p) = power {
                     led_config["maxpwr"] = json!(p);
                 }
-                if type_code.is_some() || count.is_some() || pin.is_some() {
+                let has_instance_field = type_code.is_some()
+                    || count.is_some()
+                    || pin.is_some()
+                    || led_ma.is_some()
+                    || color_order.is_some();
+                if has_instance_field {
                     let mut instance = json!({});
                     if let Some(code) = type_code {
                         instance["type"] = json!(code);
@@ -2072,6 +2105,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if let Some(p) = pin {
                         instance["pin"] = json!([p]);
+                    }
+                    if let Some(ma) = led_ma {
+                        instance["ledma"] = json!(ma);
+                    }
+                    if let Some(order) = color_order {
+                        instance["order"] = json!(order);
                     }
                     led_config["ins"] = json!([instance]);
                 }
@@ -2087,8 +2126,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if power.is_some() {
                         changes.push("power budget");
                     }
+                    if led_ma.is_some() {
+                        changes.push("per-LED mA");
+                    }
                     if led_type.is_some() {
                         changes.push("LED type");
+                    }
+                    if color_order.is_some() {
+                        changes.push("color order");
                     }
                     if count.is_some() {
                         changes.push("LED count");
