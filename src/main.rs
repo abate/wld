@@ -526,6 +526,9 @@ enum SegmentCommands {
         /// Segment ID (0-based)
         #[arg(long, add = ArgValueCompleter::new(complete_segments))]
         id: u8,
+        /// Segment name (shown in Home Assistant WLED integration)
+        #[arg(long)]
+        name: Option<String>,
         /// First LED index (inclusive)
         #[arg(long)]
         start: Option<u16>,
@@ -1632,6 +1635,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             SegmentCommands::Set {
                 id,
+                name,
                 start,
                 stop,
                 color,
@@ -1649,6 +1653,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let ip = resolve_device_ip(device.as_deref())?;
 
                 let mut seg = json!({"id": id});
+                if let Some(n) = &name {
+                    seg["n"] = json!(n);
+                }
                 if let Some(s) = start {
                     seg["start"] = json!(s);
                 }
@@ -1752,10 +1759,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut found = false;
                 for (key, value) in obj {
-                    // Skip non-numeric keys (metadata)
+                    // Skip non-numeric keys (metadata) and preset 0 (internal state)
                     let preset_id = match key.parse::<u64>() {
+                        Ok(0) | Err(_) => continue,
                         Ok(id) => id,
-                        Err(_) => continue,
                     };
                     found = true;
                     let name = value["n"].as_str().unwrap_or("(unnamed)");
