@@ -719,6 +719,33 @@ fn test_dry_run_preset_save() {
 }
 
 #[test]
+fn test_dry_run_preset_save_with_boot() {
+    let temp_home = setup_temp_home();
+    run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);
+
+    let output = run_command_with_temp_home(
+        &[
+            "--dry-run",
+            "preset",
+            "save",
+            "--id",
+            "1",
+            "--name",
+            "Boot Preset",
+            "--boot",
+        ],
+        &temp_home,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would save current state as preset 1"));
+    assert!(stdout.contains("Boot Preset"));
+    assert!(stdout.contains("Would set preset 1 as boot preset"));
+
+    cleanup_temp_home(&temp_home);
+}
+
+#[test]
 fn test_dry_run_preset_load() {
     let temp_home = setup_temp_home();
     run_command_with_temp_home(&["add", "test_device", "192.168.1.100"], &temp_home);

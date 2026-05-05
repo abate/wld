@@ -11,8 +11,8 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::{
     get_device_config, get_device_effects, get_device_info, get_device_palettes, get_device_presets,
-    get_device_state, get_device_status, parse_color, post_device_state, set_device_brightness,
-    set_device_power, wled_led_type_name, DeviceStatus,
+    get_device_state, get_device_status, parse_color, post_device_config, post_device_state,
+    set_device_brightness, set_device_power, wled_led_type_name, DeviceStatus,
 };
 use serde_json::json;
 
@@ -75,6 +75,8 @@ pub struct WledPresetSaveParams {
     pub id: u16,
     /// Preset name
     pub name: Option<String>,
+    /// Set as boot preset (auto-set if no boot preset exists)
+    pub boot: Option<bool>,
     /// Device name or IP address (optional)
     pub device: Option<String>,
 }
@@ -378,15 +380,25 @@ impl WledMcpServer {
                 let ip = config.get_device_ip(device.as_deref()).map_err(|e| e.to_string())?;
                 let presets = get_device_presets(&ip).map_err(|e| e.to_string())?;
                 let obj = presets.as_object().ok_or("Invalid presets response from device")?;
+
+                let boot_preset_id = get_device_config(&ip)
+                    .ok()
+                    .and_then(|cfg| cfg["def"]["ps"].as_u64())
+                    .unwrap_or(0);
+
                 let mut output = String::new();
                 let mut found = false;
                 for (key, value) in obj {
-                    if key.parse::<u16>().is_err() { continue; }
+                    let preset_id = match key.parse::<u64>() {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
                     found = true;
                     let name = value["n"].as_str().unwrap_or("(unnamed)");
                     let on = value["on"].as_bool();
                     let bri = value["bri"].as_u64();
                     let mut details = Vec::new();
+                    if preset_id == boot_preset_id { details.push("boot".to_string()); }
                     if let Some(o) = on { details.push(if o { "on".to_string() } else { "off".to_string() }); }
                     if let Some(b) = bri { details.push(format!("brightness={b}")); }
                     let detail_str = if details.is_empty() { String::new() } else { format!(" ({})", details.join(", ")) };
@@ -417,6 +429,7 @@ impl WledMcpServer {
         let device = params.device.clone();
         let id = params.id;
         let name = params.name.clone();
+        let boot = params.boot.unwrap_or(false);
         match tokio::time::timeout(
             DEVICE_TIMEOUT,
             tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -429,7 +442,30 @@ impl WledMcpServer {
                 if let Some(ref n) = name { payload["n"] = json!(n); }
                 post_device_state(&ip, &payload).map_err(|e| e.to_string())?;
                 let display_name = name.as_deref().unwrap_or("(unnamed)");
-                Ok(format!("Saved current state as preset {id} ({display_name}) on device at {ip}"))
+                let mut output = format!("Saved current state as preset {id} ({display_name}) on device at {ip}");
+
+                // Set as boot preset if requested, or auto-set if none configured
+                let set_boot = if boot {
+                    true
+                } else {
+                    let cfg = get_device_config(&ip).ok();
+                    let current_boot = cfg
+                        .as_ref()
+                        .and_then(|c| c["def"]["ps"].as_u64())
+                        .unwrap_or(0);
+                    current_boot == 0
+                };
+
+                if set_boot {
+                    post_device_config(&ip, &json!({"def": {"ps": id}})).map_err(|e| e.to_string())?;
+                    if boot {
+                        output.push_str(&format!("\nSet preset {id} as boot preset"));
+                    } else {
+                        output.push_str(&format!("\nAuto-set preset {id} as boot preset (no boot preset was configured)"));
+                    }
+                }
+
+                Ok(output)
             }),
         )
         .await

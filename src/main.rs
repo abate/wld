@@ -349,11 +349,15 @@ enum Commands {
     #[command(long_about = "Manage presets.\n\n\
         Presets save the complete device state (colors, effects, segments) \
         so you can recall them later. IDs range from 1 to 250.\n\n\
+        The boot preset is loaded automatically when the device powers on. \
+        If no boot preset is configured, saving a preset will auto-set it as \
+        the boot preset. Use --boot to explicitly set a preset as the boot preset.\n\n\
         Examples:\n  \
-        wld preset list                        Show all presets\n  \
-        wld preset save --id 1 --name \"Movie\"  Save current state\n  \
-        wld preset load --id 1                 Recall a preset\n  \
-        wld preset delete --id 3               Remove a preset")]
+        wld preset list                         Show all presets\n  \
+        wld preset save --id 1 --name \"Movie\"   Save current state\n  \
+        wld preset save --id 2 --name \"Boot\" --boot  Save and set as boot preset\n  \
+        wld preset load --id 1                  Recall a preset\n  \
+        wld preset delete --id 3                Remove a preset")]
     Preset {
         #[command(subcommand)]
         subcommand: PresetCommands,
@@ -609,6 +613,9 @@ enum PresetCommands {
         /// Include segment bounds in preset
         #[arg(long)]
         include_bounds: bool,
+        /// Set this preset as the boot preset (auto-set if no boot preset exists)
+        #[arg(long)]
+        boot: bool,
         /// Device name or IP (uses default if not specified)
         #[arg(short, long, add = ArgValueCompleter::new(complete_devices))]
         device: Option<String>,
@@ -1737,18 +1744,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .as_object()
                     .ok_or("Invalid presets response from device")?;
 
+                // Get boot preset ID from device config
+                let boot_preset_id = get_device_config(&ip)
+                    .ok()
+                    .and_then(|cfg| cfg["def"]["ps"].as_u64())
+                    .unwrap_or(0);
+
                 let mut found = false;
                 for (key, value) in obj {
                     // Skip non-numeric keys (metadata)
-                    if key.parse::<u16>().is_err() {
-                        continue;
-                    }
+                    let preset_id = match key.parse::<u64>() {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
                     found = true;
                     let name = value["n"].as_str().unwrap_or("(unnamed)");
                     let on = value["on"].as_bool();
                     let bri = value["bri"].as_u64();
 
                     let mut details = Vec::new();
+                    if preset_id == boot_preset_id {
+                        details.push("boot".to_string());
+                    }
                     if let Some(on) = on {
                         details.push(if on {
                             "on".to_string()
@@ -1776,6 +1793,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 name,
                 include_brightness,
                 include_bounds,
+                boot,
                 device,
             } => {
                 if id == 0 || id > 250 {
@@ -1794,15 +1812,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     payload["sb"] = json!(true);
                 }
 
+                // Determine if we should set this as boot preset:
+                // - Always if --boot was specified
+                // - Auto-set if no boot preset is currently configured
+                let set_boot = if boot {
+                    true
+                } else if !dry_run {
+                    let cfg = get_device_config(&ip).ok();
+                    let current_boot = cfg
+                        .as_ref()
+                        .and_then(|c| c["def"]["ps"].as_u64())
+                        .unwrap_or(0);
+                    current_boot == 0
+                } else {
+                    false
+                };
+
+                let display_name = name.as_deref().unwrap_or("(unnamed)");
                 if dry_run {
-                    let display_name = name.as_deref().unwrap_or("(unnamed)");
                     println!("Would save current state as preset {id} ({display_name}) on device at {ip}");
+                    if boot {
+                        println!("Would set preset {id} as boot preset");
+                    }
                 } else {
                     post_device_state(&ip, &payload)?;
-                    let display_name = name.as_deref().unwrap_or("(unnamed)");
                     println!(
                         "Saved current state as preset {id} ({display_name}) on device at {ip}"
                     );
+
+                    if set_boot {
+                        post_device_config(&ip, &json!({"def": {"ps": id}}))?;
+                        if boot {
+                            println!("Set preset {id} as boot preset");
+                        } else {
+                            println!("Auto-set preset {id} as boot preset (no boot preset was configured)");
+                        }
+                    }
                 }
             }
             PresetCommands::Load { id, device } => {
